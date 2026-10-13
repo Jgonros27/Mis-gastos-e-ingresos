@@ -60,7 +60,8 @@ it("OPFS: un fallo al cerrar no destruye la anterior y permite recuperar", async
         getFileHandle: async (name: string) => ({
           getFile: async () => ({
             text: async () => {
-              if (!store.has(name)) throw Error("No existe");
+              if (!store.has(name))
+                throw new DOMException("No existe", "NotFoundError");
               return store.get(name)!;
             },
           }),

@@ -10,8 +10,9 @@ async function read(name: string) {
       return await (
         await (await directory.getFileHandle(name)).getFile()
       ).text();
-    } catch {
-      return null;
+    } catch (error) {
+      if ((error as DOMException).name === "NotFoundError") return null;
+      throw error;
     }
   }
   return localStorage.getItem(name === KEY ? KEY : BACKUP);
@@ -39,16 +40,21 @@ export async function loadDocument() {
   } catch {
     directory = undefined;
   }
+  let damaged = false;
   for (const name of [KEY, BACKUP]) {
     const raw = await read(name);
     if (raw)
       try {
-        return { doc: validate(JSON.parse(raw)), recovered: name === BACKUP };
+        return {
+          doc: validate(JSON.parse(raw)),
+          recovered: name === BACKUP,
+          damaged: false,
+        };
       } catch {
-        /* intentar copia anterior */
+        damaged = true;
       }
   }
-  return { doc: emptyDocument(), recovered: false };
+  return { doc: emptyDocument(), recovered: false, damaged };
 }
 export function persist(doc: Document, expected: string) {
   const task = async () => {
@@ -75,7 +81,11 @@ export function persist(doc: Document, expected: string) {
       await write(KEY, text);
       const check = await read(KEY);
       if (check !== text) throw Error("No se pudo verificar la escritura");
-      localStorage.setItem("brisa-revision", doc.revision);
+      try {
+        localStorage.setItem("brisa-revision", doc.revision);
+      } catch {
+        /* OPFS remains the primary durable document. */
+      }
     };
     if (navigator.locks) await navigator.locks.request("brisa-write", perform);
     else await perform();
@@ -87,4 +97,7 @@ export function persist(doc: Document, expected: string) {
 export async function previousDocument() {
   const raw = await read(BACKUP);
   return raw ? validate(JSON.parse(raw)) : null;
+}
+export async function rawStoredDocument() {
+  return await read(KEY);
 }

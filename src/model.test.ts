@@ -141,6 +141,7 @@ describe("informes y presupuestos", () => {
   });
   it("protege CSV y valida firmas", () => {
     expect(csv([['=HYPERLINK("x")']])).toContain("'=HYPERLINK");
+    expect(csv([[-12.5]])).toBe('\uFEFF"-12,5"');
     expect(
       signature(new TextEncoder().encode("%PDF-x"), "application/pdf"),
     ).toBe(true);

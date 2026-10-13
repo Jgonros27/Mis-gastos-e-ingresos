@@ -35,15 +35,19 @@ export function previousDays(days: string[], year = false) {
   if (!days.length) return [];
   const span =
     Math.round((dateNumber(days.at(-1)!) - dateNumber(days[0])) / 86400000) + 1;
-  return days.map((day) => {
-    const d = new Date(day + "T12:00:00Z");
-    if (year) {
-      const month = d.getUTCMonth();
-      d.setUTCFullYear(d.getUTCFullYear() - 1);
-      if (d.getUTCMonth() !== month) d.setUTCDate(0);
-    } else d.setUTCDate(d.getUTCDate() - span);
-    return civil(d);
-  });
+  return [
+    ...new Set(
+      days.map((day) => {
+        const d = new Date(day + "T12:00:00Z");
+        if (year) {
+          const month = d.getUTCMonth();
+          d.setUTCFullYear(d.getUTCFullYear() - 1);
+          if (d.getUTCMonth() !== month) d.setUTCDate(0);
+        } else d.setUTCDate(d.getUTCDate() - span);
+        return civil(d);
+      }),
+    ),
+  ];
 }
 export function comparePercent(current: number, previous: number) {
   return previous === 0 ? null : ((current - previous) / previous) * 100;

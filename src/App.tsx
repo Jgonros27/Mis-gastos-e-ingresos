@@ -36,6 +36,7 @@ import {
   persist,
   storageMode,
   previousDocument,
+  rawStoredDocument,
 } from "./storage";
 import {
   previewImport,
@@ -45,6 +46,7 @@ import {
 } from "./importer";
 import TransactionForm from "./TransactionForm";
 import ReceiptViewer from "./ReceiptViewer";
+import ReceiptThumbnail from "./ReceiptThumbnail";
 import Reports from "./Reports";
 declare const __PASSWORD_HASH__: string;
 const session = () =>
@@ -92,6 +94,7 @@ export default function App() {
     ),
     [reminderCard, setReminderCard] = useState(false);
   const pendingLink = useRef<any>(null);
+  const [persistedAt, setPersistedAt] = useState("");
   const ref = useRef(doc),
     revision = useRef(""),
     fileHandle = useRef<any>(null),
@@ -101,18 +104,79 @@ export default function App() {
     offlineReady: [offlineReady],
     updateServiceWorker,
   } = useRegisterSW();
+  const modalOpen = !!(form || detail || preview || viewer);
+  useEffect(() => {
+    if (!modalOpen) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const surfaces = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".content,.sidebar,.mobile-nav,.fab",
+      ),
+    );
+    surfaces.forEach((el) => (el.inert = true));
+    const oldOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const selector =
+      'button:not([disabled]),input:not([type=hidden]),select,a[href],[tabindex="0"]';
+    const overlay = () =>
+      Array.from(document.querySelectorAll<HTMLElement>(".overlay")).at(-1);
+    queueMicrotask(() => {
+      const area = overlay();
+      (
+        area?.querySelector<HTMLElement>("[autofocus]") ||
+        area?.querySelector<HTMLElement>(selector)
+      )?.focus();
+    });
+    const trap = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const items = Array.from(
+        overlay()?.querySelectorAll<HTMLElement>(selector) || [],
+      ).filter((el) => el.getClientRects().length > 0);
+      if (!items.length) return;
+      const first = items[0],
+        last = items.at(-1)!;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", trap);
+    return () => {
+      surfaces.forEach((el) => (el.inert = false));
+      document.body.style.overflow = oldOverflow;
+      document.removeEventListener("keydown", trap);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [modalOpen]);
   useEffect(() => {
     loadDocument()
-      .then(({ doc, recovered }) => {
+      .then(({ doc, recovered, damaged }) => {
+        if (damaged)
+          setMessage(
+            "Los documentos guardados están dañados. Descarga el archivo original desde Ajustes antes de importar una copia válida.",
+          );
         setDoc(doc);
         ref.current = doc;
         revision.current = doc.revision;
+        setPersistedAt(doc.savedAt);
         setReady(true);
         setStatus(
           recovered ? "Recuperado desde copia anterior" : "Datos cargados",
         );
       })
-      .catch((e) => setMessage(e.message));
+      .catch((e) => {
+        setMessage(
+          "No se pudo abrir el almacenamiento: " +
+            e.message +
+            ". Los archivos existentes no se han borrado. Puedes importar una copia o descargar los cambios pendientes.",
+        );
+        setReady(true);
+        setStatus("Pendiente de guardar");
+        revision.current = ref.current.revision;
+      });
     const before = (e: Event) => {
         e.preventDefault();
         setInstall(e);
@@ -181,6 +245,7 @@ export default function App() {
       try {
         await persist(d, revision.current);
         revision.current = d.revision;
+        setPersistedAt(d.savedAt);
         setStatus(
           ref.current.revision === d.revision ? "Guardado" : "Guardando…",
         );
@@ -542,7 +607,12 @@ export default function App() {
             Nueva versión disponible
             <button
               onClick={() => {
-                if (!form) void updateServiceWorker(true);
+                if (
+                  !form &&
+                  status !== "Pendiente de guardar" &&
+                  status !== "Guardando…"
+                )
+                  void updateServiceWorker(true);
                 else
                   setMessage(
                     "Guarda o cierra el formulario antes de actualizar.",
@@ -882,7 +952,9 @@ export default function App() {
                                   ? spent
                                     ? "Exceso (presupuesto cero)"
                                     : "0 %"
-                                  : ((spent / b) * 100).toFixed(1) + " %"}
+                                  : ((spent / b) * 100)
+                                      .toFixed(1)
+                                      .replace(".", ",") + " %"}
                             </small>
                             <progress
                               max={b || 1}
@@ -960,8 +1032,8 @@ export default function App() {
                         <p>{capacity}</p>
                         <p>
                           Último guardado:{" "}
-                          {doc.savedAt
-                            ? new Date(doc.savedAt).toLocaleString("es-ES")
+                          {persistedAt
+                            ? new Date(persistedAt).toLocaleString("es-ES")
                             : "Todavía no guardado"}
                           <br />
                           Última copia descargada: {backupDate || "Ninguna"}
@@ -999,6 +1071,25 @@ export default function App() {
                           </button>
                           <button
                             onClick={async () => {
+                              try {
+                                const raw = await rawStoredDocument();
+                                if (raw)
+                                  download(
+                                    new Blob([raw], {
+                                      type: "application/json",
+                                    }),
+                                    "brisa-almacenado-original.json",
+                                  );
+                                else setMessage("No hay documento almacenado.");
+                              } catch (e) {
+                                setMessage((e as Error).message);
+                              }
+                            }}
+                          >
+                            Descargar archivo almacenado original
+                          </button>
+                          <button
+                            onClick={async () => {
                               const ok = await navigator.storage?.persist?.();
                               setMessage(
                                 ok
@@ -1026,7 +1117,10 @@ export default function App() {
                             <button onClick={() => void link()}>
                               Vincular existente
                             </button>
-                            <button onClick={() => void link(true)}>
+                            <button
+                              disabled={!("showSaveFilePicker" in window)}
+                              onClick={() => void link(true)}
+                            >
                               Crear archivo
                             </button>
                             <button
@@ -1352,8 +1446,8 @@ export default function App() {
                   setViewer({ items: detail.attachments, index: i })
                 }
               >
-                {a.mime === "application/pdf" ? "📄" : "🖼️"} {a.name} ·{" "}
-                {(a.size / 1024).toFixed(1)} KB · Abrir →
+                <ReceiptThumbnail item={a} /> {a.name} ·{" "}
+                {(a.size / 1024).toFixed(1).replace(".", ",")} KB · Abrir →
               </button>
             ))}
             <footer>

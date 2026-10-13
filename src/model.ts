@@ -368,10 +368,8 @@ export function csv(rows: unknown[][]) {
                     useGrouping: false,
                     maximumFractionDigits: 2,
                   })
-                : String(v ?? "")
-              )
-                .replace(/^[=+\-@\t\r]/, "'$&")
-                .replaceAll('"', '""') +
+                : String(v ?? "").replace(/^(?:\s*[=+\-@]|[\t\r\n])/, "'$&")
+              ).replaceAll('"', '""') +
               '"',
           )
           .join(";"),

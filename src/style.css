@@ -1336,3 +1336,41 @@ label input[type="checkbox"] {
     font-size: 10px;
   }
 }
+
+.card {
+  min-width: 0;
+}
+.receipt-thumbnail {
+  width: 42px;
+  height: 42px;
+  object-fit: cover;
+  border-radius: 7px;
+}
+.pdf-thumbnail {
+  font-size: 10px;
+  padding: 10px 6px;
+  color: #8c5249;
+  background: #f5e4da;
+  border-radius: 6px;
+}
+.mobile-filter-close {
+  display: none;
+}
+@media (max-width: 760px) {
+  .report-filters {
+    position: fixed;
+    inset: 60px 8px 80px;
+    z-index: 8;
+    overflow: auto;
+    box-shadow: 0 0 0 100vmax #263c3370;
+  }
+  .mobile-filter-close {
+    display: flex;
+    position: sticky;
+    top: 0;
+    background: #f2cc49;
+    width: 100%;
+    z-index: 1;
+    margin-bottom: 16px;
+  }
+}

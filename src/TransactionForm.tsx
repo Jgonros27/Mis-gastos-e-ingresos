@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ReceiptThumbnail from "./ReceiptThumbnail";
 import {
   attachment,
   calculate,
@@ -293,8 +294,8 @@ export default function TransactionForm({
           {items.map((a, i) => (
             <div className="attachment" key={a.id}>
               <button onClick={() => onView(items, i)}>
-                {a.mime === "application/pdf" ? "📄" : "🖼️"} {a.name} ·{" "}
-                {(a.size / 1024).toFixed(1)} KB
+                <ReceiptThumbnail item={a} /> {a.name} ·{" "}
+                {(a.size / 1024).toFixed(1).replace(".", ",")} KB
               </button>
               <button
                 aria-label={"Descargar " + a.name}

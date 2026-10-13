@@ -1,4 +1,5 @@
 import { useState } from "react";
+import BudgetReport, { budgetReportRows } from "./BudgetReport";
 import {
   effectiveDays,
   previousDays,
@@ -47,7 +48,7 @@ export default function Reports({
     [group, setGroup] = useState("month"),
     [sort, setSort] = useState("date"),
     [ascending, setAscending] = useState(false),
-    [filters, setFilters] = useState(true),
+    [filters, setFilters] = useState(!matchMedia("(max-width:760px)").matches),
     [sameDay, setSameDay] = useState(false);
   const update = (key: keyof Filter, value: any) =>
     setF({ ...f, [key]: value });
@@ -217,6 +218,27 @@ export default function Reports({
               .filter((t) => t.categoryId === c.id)
               .reduce((a, t) => a + t.amountCents, 0) / 100,
           ]),
+          [],
+          [
+            "Presupuestos",
+            "Mes",
+            "Categoría",
+            "Presupuestado EUR",
+            "Gasto total EUR",
+            "Gasto filtrado EUR",
+            "Restante EUR",
+            "Consumido",
+          ],
+          ...budgetReportRows(doc, months, rows).map((d) => [
+            "",
+            d.month,
+            d.category,
+            d.amount / 100,
+            d.total / 100,
+            d.filtered / 100,
+            d.remaining / 100,
+            d.percent,
+          ]),
         ]),
       ]),
       "brisa-resumen.csv",
@@ -269,6 +291,12 @@ export default function Reports({
       </p>
       {filters && (
         <section className="card report-filters">
+          <button
+            className="mobile-filter-close"
+            onClick={() => setFilters(false)}
+          >
+            Aplicar filtros y cerrar ✓
+          </button>
           <div className="toolbar">
             <select
               aria-label="Periodo predefinido"
@@ -483,7 +511,9 @@ export default function Reports({
           Ahorro{" "}
           <b>
             {savings
-              ? ((sum.balance / sum.income) * 100).toFixed(1) + " %"
+              ? ((sum.balance / sum.income) * 100)
+                  .toFixed(1)
+                  .replace(".", ",") + " %"
               : "No disponible"}
           </b>
           {!savings && (
@@ -609,7 +639,9 @@ export default function Reports({
                       (c.value /
                         (kind === "expense" ? sum.expense : sum.income)) *
                       100
-                    ).toFixed(1)}{" "}
+                    )
+                      .toFixed(1)
+                      .replace(".", ",")}{" "}
                     %
                   </b>
                   <i
@@ -646,6 +678,7 @@ export default function Reports({
         <h3>Equivalente del año anterior</h3>
         {comparison(true)}
       </section>
+      <BudgetReport doc={doc} months={months} rows={rows} />
       <section className="card">
         <div className="section-title">
           <h2>Resumen mensual</h2>
