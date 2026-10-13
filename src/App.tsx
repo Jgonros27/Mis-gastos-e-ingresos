@@ -48,6 +48,10 @@ import TransactionForm from "./TransactionForm";
 import ReceiptViewer from "./ReceiptViewer";
 import ReceiptThumbnail from "./ReceiptThumbnail";
 import Reports from "./Reports";
+import BudgetPage from "./BudgetPage";
+import BudgetEditor from "./BudgetEditor";
+import ReceiptsManager from "./ReceiptsManager";
+import { useMobile } from "./useMobile";
 declare const __PASSWORD_HASH__: string;
 const session = () =>
   document.cookie
@@ -60,6 +64,7 @@ const dateLabel = (s: string) =>
     month: "long",
   });
 export default function App() {
+  const isMobile = useMobile();
   const [unlocked, setUnlocked] = useState(session),
     [password, setPassword] = useState(""),
     [loginError, setLoginError] = useState(""),
@@ -95,6 +100,9 @@ export default function App() {
     [reminderCard, setReminderCard] = useState(false);
   const pendingLink = useRef<any>(null);
   const [persistedAt, setPersistedAt] = useState("");
+  const [calendarOpen, setCalendarOpen] = useState(false),
+    [budgetEdit, setBudgetEdit] = useState<string | null>(null),
+    [receipts, setReceipts] = useState<Transaction | null>(null);
   const ref = useRef(doc),
     revision = useRef(""),
     fileHandle = useRef<any>(null),
@@ -104,7 +112,15 @@ export default function App() {
     offlineReady: [offlineReady],
     updateServiceWorker,
   } = useRegisterSW();
-  const modalOpen = !!(form || detail || preview || viewer);
+  const modalOpen = !!(
+    form ||
+    detail ||
+    preview ||
+    viewer ||
+    calendarOpen ||
+    budgetEdit ||
+    receipts
+  );
   useEffect(() => {
     if (!modalOpen) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -308,6 +324,9 @@ export default function App() {
     setPassword("");
   };
   const logout = () => {
+    setReceipts(null);
+    setCalendarOpen(false);
+    setBudgetEdit(null);
     setViewer(null);
     setForm(null);
     setDetail(null);
@@ -443,6 +462,7 @@ export default function App() {
     setDetail(null);
     setMonth(t.date.slice(0, 7));
     setSelected(t.date);
+    if (page === "calendar") setCalendarOpen(true);
   };
   const period = doc.transactions.filter((t) => t.date.startsWith(month)),
     sum = totals(period),
@@ -456,12 +476,20 @@ export default function App() {
   const nav = [
     ["home", "Inicio", Home],
     ["calendar", "Calendario", CalendarDays],
+    ["charts", "Gráficos", ChartNoAxesCombined],
     ["reports", "Informes", ChartNoAxesCombined],
     ["settings", "Ajustes", Settings],
   ] as const;
   const rows = (ts: Transaction[]) =>
     ts.map((t) => (
-      <button className="transaction" key={t.id} onClick={() => setDetail(t)}>
+      <button
+        className="transaction"
+        key={t.id}
+        onClick={() => {
+          setDetail(t);
+          setCalendarOpen(false);
+        }}
+      >
         <span
           className="category-icon"
           style={{ background: category(t.categoryId).color }}
@@ -572,6 +600,7 @@ export default function App() {
       </aside>
       <main className="content">
         <div className="topbar">
+          <img className="mobile-brand-icon" src="./logo.svg" alt="Brisa" />
           {status === "Pendiente de guardar" && (
             <button onClick={() => mutate(ref.current)}>
               Reintentar guardado
@@ -657,7 +686,9 @@ export default function App() {
                   </small>
                   <h1>
                     {page === "home"
-                      ? "Tu dinero, con perspectiva."
+                      ? isMobile
+                        ? "Mis movimientos"
+                        : "Tu dinero, con perspectiva."
                       : "Calendario"}
                   </h1>
                   <p>
@@ -843,7 +874,10 @@ export default function App() {
                                 ? "over"
                                 : "")
                             }
-                            onClick={() => setSelected(date)}
+                            onClick={() => {
+                              setSelected(date);
+                              setCalendarOpen(true);
+                            }}
                           >
                             <b>{i + 1}</b>
                             {s.income > 0 && (
@@ -865,25 +899,12 @@ export default function App() {
                       : "Umbral diario: presupuesto mensual / días del mes. Rojo indica exceso."}
                   </p>
                 </section>
-                <section className="card">
-                  <h2>{dateLabel(selected)}</h2>
-                  {rows(doc.transactions.filter((t) => t.date === selected))}
-                  {!doc.transactions.some((t) => t.date === selected) && (
-                    <p className="empty">
-                      Este día todavía no tiene movimientos.
-                    </p>
-                  )}
-                  <button
-                    className="primary"
-                    onClick={() => setForm({ date: selected })}
-                  >
-                    + Añadir en este día
-                  </button>
-                </section>
               </div>
             )}
-            {page === "reports" && (
+            {(page === "reports" || page === "charts") && (
               <Reports
+                mode={page === "charts" ? "charts" : "reports"}
+                onBudgets={() => setPage("budgets")}
                 doc={doc}
                 onEdit={(t) => setDetail(t)}
                 onFavorite={(name, filter: Filter) =>
@@ -918,103 +939,7 @@ export default function App() {
                   )}
                 </div>
                 {page === "budgets" ? (
-                  <section className="card">
-                    <p>
-                      Valores por defecto y modificaciones por mes. El global es
-                      independiente de las categorías.
-                    </p>
-                    {[
-                      { id: "global", name: "Presupuesto global", icon: "🎯" },
-                      ...doc.categories.filter((c) => c.type === "expense"),
-                    ].map((c) => {
-                      const b = budget(doc, month, c.id),
-                        spent = totals(
-                          period.filter(
-                            (t) => c.id === "global" || t.categoryId === c.id,
-                          ),
-                        ).expense;
-                      return (
-                        <div className="budget-row" key={c.id}>
-                          <span>
-                            {c.icon} {c.name}
-                          </span>
-                          <div>
-                            <b>
-                              {b === undefined ? "Sin presupuesto" : money(b)}
-                            </b>
-                            <small>
-                              Gastado: {money(spent)} · Restante:{" "}
-                              {b === undefined ? "—" : money(b - spent)} ·
-                              Consumido:{" "}
-                              {b === undefined
-                                ? "—"
-                                : b === 0
-                                  ? spent
-                                    ? "Exceso (presupuesto cero)"
-                                    : "0 %"
-                                  : ((spent / b) * 100)
-                                      .toFixed(1)
-                                      .replace(".", ",") + " %"}
-                            </small>
-                            <progress
-                              max={b || 1}
-                              value={Math.min(spent, b || 1)}
-                            />
-                          </div>
-                          <button
-                            onClick={() => {
-                              const value = prompt(
-                                "Presupuesto para " +
-                                  month +
-                                  " (vacío elimina modificación)",
-                                b === undefined
-                                  ? ""
-                                  : String(b / 100).replace(".", ","),
-                              );
-                              if (value === null) return;
-                              try {
-                                const budgets = {
-                                  ...ref.current.budgets,
-                                  [month]: { ...ref.current.budgets[month] },
-                                };
-                                if (value === "") delete budgets[month][c.id];
-                                else budgets[month][c.id] = cents(value);
-                                mutate({ ...ref.current, budgets });
-                              } catch (e) {
-                                setMessage((e as Error).message);
-                              }
-                            }}
-                          >
-                            Editar mes
-                          </button>
-                          <button
-                            onClick={() => {
-                              const value = prompt(
-                                "Valor por defecto (vacío elimina)",
-                                String(
-                                  (doc.budgets.default?.[c.id] || 0) / 100,
-                                ).replace(".", ","),
-                              );
-                              if (value === null) return;
-                              try {
-                                const b = {
-                                  ...doc.budgets,
-                                  default: { ...doc.budgets.default },
-                                };
-                                if (value === "") delete b.default[c.id];
-                                else b.default[c.id] = cents(value);
-                                mutate({ ...ref.current, budgets: b });
-                              } catch (e) {
-                                setMessage((e as Error).message);
-                              }
-                            }}
-                          >
-                            Por defecto
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </section>
+                  <BudgetPage doc={doc} month={month} onEdit={setBudgetEdit} />
                 ) : (
                   <>
                     <div className="settings-grid">
@@ -1418,7 +1343,62 @@ export default function App() {
           onView={(items, index) => setViewer({ items, index })}
         />
       )}{" "}
-      {detail && !form && (
+      {calendarOpen && !form && (
+        <div className="overlay">
+          <section
+            className="modal calendar-day"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Movimientos del día"
+          >
+            <header>
+              <div>
+                <small>TUS MOVIMIENTOS DE ESTE DÍA</small>
+                <h2>{dateLabel(selected)}</h2>
+              </div>
+              <button onClick={() => setCalendarOpen(false)}>✕</button>
+            </header>
+            <div className="compact-stats">
+              <div>
+                <small>Gastos</small>
+                <b>
+                  {money(
+                    totals(doc.transactions.filter((t) => t.date === selected))
+                      .expense,
+                  )}
+                </b>
+              </div>
+              <div>
+                <small>Ingresos</small>
+                <b className="income">
+                  {money(
+                    totals(doc.transactions.filter((t) => t.date === selected))
+                      .income,
+                  )}
+                </b>
+              </div>
+            </div>
+            {rows(doc.transactions.filter((t) => t.date === selected))}
+            {!doc.transactions.some((t) => t.date === selected) && (
+              <p className="empty">
+                Este día no tiene movimientos. Puedes añadir el primero.
+              </p>
+            )}
+            <footer>
+              <button
+                className="primary"
+                onClick={() => {
+                  setCalendarOpen(false);
+                  setForm({ date: selected });
+                }}
+              >
+                + Añadir en este día
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+      {detail && !form && !receipts && (
         <div className="overlay">
           <section className="modal detail">
             <header>
@@ -1451,6 +1431,9 @@ export default function App() {
               </button>
             ))}
             <footer>
+              <button className="primary" onClick={() => setReceipts(detail)}>
+                📎 Gestionar recibos ({detail.attachments.length})
+              </button>
               <button onClick={() => setForm({ initial: detail })}>
                 Editar
               </button>
@@ -1493,6 +1476,48 @@ export default function App() {
             </footer>
           </section>
         </div>
+      )}
+      {budgetEdit && (
+        <BudgetEditor
+          doc={doc}
+          categoryId={budgetEdit}
+          month={month}
+          onClose={() => setBudgetEdit(null)}
+          onSave={(next) => {
+            mutate(next);
+            setBudgetEdit(null);
+          }}
+        />
+      )}
+      {receipts && (
+        <ReceiptsManager
+          transaction={receipts}
+          maxFileMB={doc.settings.maxFileMB}
+          onClose={() => setReceipts(null)}
+          onView={(items, index) => setViewer({ items, index })}
+          onSave={(items) => {
+            const current = ref.current.transactions.find(
+              (t) => t.id === receipts.id,
+            );
+            if (!current) {
+              setMessage("El movimiento ya no existe.");
+              return;
+            }
+            const updated = {
+              ...current,
+              attachments: items,
+              updatedAt: new Date().toISOString(),
+            };
+            mutate({
+              ...ref.current,
+              transactions: ref.current.transactions.map((t) =>
+                t.id === updated.id ? updated : t,
+              ),
+            });
+            setDetail(updated);
+            setReceipts(null);
+          }}
+        />
       )}
       {preview && (
         <div className="overlay">

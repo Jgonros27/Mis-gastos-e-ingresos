@@ -1,25 +1,18 @@
-import { useState } from "react";
-import BudgetReport, { budgetReportRows } from "./BudgetReport";
-import {
-  effectiveDays,
-  previousDays,
-  comparePercent,
-  monthEnd,
-} from "./analytics";
+import { useEffect, useRef, useState } from "react";
 import {
   ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  LineChart,
+  Line,
   BarChart,
   Bar,
   XAxis,
   YAxis,
-  Tooltip,
-  Legend,
-  LineChart,
-  Line,
   CartesianGrid,
-  PieChart,
-  Pie,
-  Cell,
+  Legend,
 } from "recharts";
 import {
   blankFilter,
@@ -28,30 +21,100 @@ import {
   money,
   csv,
   download,
-  normalize,
   budget,
   today,
   type Document,
   type Filter,
   type Transaction,
+  type Kind,
 } from "./model";
+import { effectiveDays, monthEnd } from "./analytics";
+import { adjacentMonth } from "./budgets";
+import { useMobile } from "./useMobile";
+import ReportFilters from "./ReportFilters";
+import { BudgetRing } from "./BudgetPage";
+import BudgetReport, { budgetReportRows } from "./BudgetReport";
+const MONTHS = [
+  "ene",
+  "feb",
+  "mar",
+  "abr",
+  "may",
+  "jun",
+  "jul",
+  "ago",
+  "sep",
+  "oct",
+  "nov",
+  "dic",
+];
+const compact = (n: number) =>
+  new Intl.NumberFormat("es-ES", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n / 100);
+const colors = [
+  "#e9c94e",
+  "#6eafcb",
+  "#ea8fa7",
+  "#77b8a0",
+  "#82bb73",
+  "#b692cf",
+  "#efac6c",
+  "#9eb5d7",
+  "#d89378",
+  "#8cbfbd",
+];
+function categoryColor(doc: Document, id: string) {
+  const c = doc.categories.find((c) => c.id === id)!;
+  const siblings = doc.categories.filter((x) => x.type === c.type);
+  const index = siblings.findIndex((x) => x.id === id);
+  return colors[(index + (c.type === "income" ? 2 : 0)) % colors.length];
+}
 export default function Reports({
   doc,
+  mode = "reports",
   onEdit,
   onFavorite,
+  onBudgets,
 }: {
   doc: Document;
+  mode?: "charts" | "reports";
   onEdit: (t: Transaction) => void;
   onFavorite: (name: string, f: Filter) => void;
+  onBudgets: () => void;
 }) {
+  const mobile = useMobile();
   const [f, setF] = useState<Filter>(blankFilter),
-    [group, setGroup] = useState("month"),
-    [sort, setSort] = useState("date"),
-    [ascending, setAscending] = useState(false),
-    [filters, setFilters] = useState(!matchMedia("(max-width:760px)").matches),
-    [sameDay, setSameDay] = useState(false);
-  const update = (key: keyof Filter, value: any) =>
-    setF({ ...f, [key]: value });
+    [filters, setFilters] = useState(false),
+    [kind, setKind] = useState<Kind>("expense"),
+    [chartView, setChartView] = useState("distribution"),
+    [reportView, setReportView] = useState("overview"),
+    [rankPage, setRankPage] = useState(0),
+    [monthlyPage, setMonthlyPage] = useState(0),
+    [overviewMonth, setOverviewMonth] = useState(today().slice(0, 7)),
+    [drill, setDrill] = useState<{ title: string; rows: Transaction[] } | null>(
+      null,
+    ),
+    [matrixWidth, setMatrixWidth] = useState(700),
+    [matrixOffset, setMatrixOffset] = useState(0),
+    [matrixPage, setMatrixPage] = useState(0);
+  const matrixRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = matrixRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) =>
+      setMatrixWidth(entries[0].contentRect.width),
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [mobile, reportView, mode]);
+  useEffect(() => {
+    setRankPage(0);
+    setMonthlyPage(0);
+    setMatrixOffset(0);
+    setMatrixPage(0);
+  }, [f, kind]);
   let rows: Transaction[] = [];
   let error = "";
   try {
@@ -60,129 +123,134 @@ export default function Reports({
     error = (e as Error).message;
   }
   const sum = totals(rows),
-    cat = (id: string) => doc.categories.find((c) => c.id === id)!;
-  const effective = effectiveDays(doc.transactions, f);
-  const from = effective[0] || f.from || today(),
-    to = effective.at(-1) || f.to || today();
-  const days = effective.length;
-  const savings =
-    f.type === "both" &&
-    !f.categories.length &&
-    !f.text &&
-    !f.min &&
-    !f.max &&
-    f.receipts === "all" &&
-    sum.income > 0;
-  const categoryTotals = (type: string) =>
-    doc.categories
-      .filter((c) => c.type === type)
+    effective = effectiveDays(doc.transactions, f),
+    from = effective[0] || f.from || today(),
+    to = effective.at(-1) || f.to || today(),
+    months = [...new Set(effective.map((d) => d.slice(0, 7)))].sort(),
+    currentMonth = today().slice(0, 7),
+    pastMonths = months
+      .filter((m) => m <= currentMonth)
+      .sort()
+      .reverse(),
+    year =
+      f.from && f.from.slice(0, 4) === f.to.slice(0, 4)
+        ? f.from.slice(0, 4)
+        : "all",
+    years = [
+      ...new Set([
+        today().slice(0, 4),
+        ...doc.transactions.map((t) => t.date.slice(0, 4)),
+      ]),
+    ]
+      .sort()
+      .reverse();
+  const chartKind = f.type === "both" ? kind : (f.type as Kind),
+    typedRows = rows.filter((t) => t.type === chartKind),
+    typedTotal = typedRows.reduce((a, t) => a + t.amountCents, 0),
+    distribution = doc.categories
+      .filter((c) => c.type === chartKind)
       .map((c) => ({
         ...c,
-        value: rows
+        color: categoryColor(doc, c.id),
+        value: typedRows
           .filter((t) => t.categoryId === c.id)
           .reduce((a, t) => a + t.amountCents, 0),
       }))
-      .filter((c) => c.value)
+      .filter((c) => c.value > 0)
       .sort((a, b) => b.value - a.value);
-  const expenses = categoryTotals("expense");
-  const temporalKey = (date: string) => {
-    if (group === "year") return date.slice(0, 4);
-    if (group === "day") return date;
-    if (group === "week") {
-      const d = new Date(date + "T12:00:00Z");
-      d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-      return d.toISOString().slice(0, 10);
-    }
-    return date.slice(0, 7);
-  };
-  const keys = [...new Set(effective.map(temporalKey))].sort();
+  const large = distribution.filter((c) => c.value / typedTotal >= 0.06),
+    small = distribution.filter((c) => c.value / typedTotal < 0.06),
+    pieData = [
+      ...large,
+      ...(small.length
+        ? [
+            {
+              id: "other-visual",
+              name: "Otras categorías",
+              value: small.reduce((a, c) => a + c.value, 0),
+              color: "#a8b0a3",
+              icon: "⋯",
+              type: chartKind,
+            },
+          ]
+        : []),
+    ];
   let accumulated = 0;
-  const timeline = keys.map((key) => {
-    const s = totals(rows.filter((t) => temporalKey(t.date) === key));
-    accumulated += s.balance;
+  const timeline = months.map((month) => {
+    const total = totals(rows.filter((t) => t.date.startsWith(month)));
+    accumulated += total.balance;
     return {
-      key,
-      Gastos: s.expense / 100,
-      Ingresos: s.income / 100,
-      Acumulado: accumulated / 100,
+      month,
+      label: MONTHS[Number(month.slice(5)) - 1],
+      Gastos: total.expense / 100,
+      Ingresos: total.income / 100,
+      Balance: accumulated / 100,
+      ...total,
     };
   });
-  const months = [...new Set(effective.map((t) => t.slice(0, 7)))].sort();
-  const monthly = months.map((m) => ({
-    month: m,
-    ...totals(rows.filter((t) => t.date.startsWith(m))),
+  const monthly = pastMonths.map((month) => ({
+    month,
+    ...totals(rows.filter((t) => t.date.startsWith(month))),
   }));
-  const concepts = [...new Set(rows.map((t) => normalize(t.note)))]
-    .map((n) => ({
-      note: n || "(Sin nota)",
-      originals: [
-        ...new Set(
-          rows.filter((t) => normalize(t.note) === n).map((t) => t.note),
-        ),
-      ].join(" / "),
-      ...totals(rows.filter((t) => normalize(t.note) === n)),
-    }))
-    .sort((a, b) => b.expense - a.expense);
-  const ordered = [...rows].sort((a, b) => {
-    let x: any =
-        sort === "categoryId"
-          ? cat(a.categoryId).name
-          : a[sort as keyof Transaction],
-      y: any =
-        sort === "categoryId"
-          ? cat(b.categoryId).name
-          : b[sort as keyof Transaction];
-    return (
-      (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) *
-      (ascending ? 1 : -1)
+  const visibleMonthly = mobile
+    ? monthly.slice(monthlyPage * 6, monthlyPage * 6 + 6)
+    : monthly;
+  const matrixCount = Math.max(
+      1,
+      Math.min(
+        12,
+        Math.floor((matrixWidth - (mobile ? 110 : 150)) / (mobile ? 77 : 100)),
+      ),
+    ),
+    matrixMonths = pastMonths.slice(matrixOffset, matrixOffset + matrixCount),
+    matrixCats = doc.categories.filter((c) =>
+      rows.some((t) => t.categoryId === c.id),
     );
-  });
-  const preset = (name: string) => {
-    const d = new Date(),
-      y = d.getFullYear(),
-      m = d.getMonth();
-    let start = "",
-      end = "";
-    const civil = (x: Date) => x.toLocaleDateString("sv-SE");
-    if (name === "month") {
-      start = civil(new Date(y, m, 1));
-      end = civil(new Date(y, m + 1, 0));
-    } else if (name === "previous") {
-      start = civil(new Date(y, m - 1, 1));
-      end = civil(new Date(y, m, 0));
-    } else if (name === "year" || name === "lastyear") {
-      const yy = y - (name === "lastyear" ? 1 : 0);
-      start = yy + "-01-01";
-      end = yy + "-12-31";
-    } else if (name !== "all") {
-      start = civil(new Date(y, m - Number(name) + 1, 1));
-      end = today();
-    }
-    setF({ ...f, from: start, to: end, months: [] });
-  };
+  let baseline: Transaction[] = [];
+  try {
+    baseline = filterTransactions(doc.transactions, {
+      ...f,
+      from: "",
+      to: "",
+      months: [],
+    });
+  } catch {}
+  const categoryAmount = (id: string, month: string, source = rows) =>
+    source
+      .filter((t) => t.categoryId === id && t.date.startsWith(month))
+      .reduce((a, t) => a + t.amountCents, 0);
+  const openCategory = (id: string) =>
+    setDrill({
+      title:
+        id === "other-visual"
+          ? "Otras categorías"
+          : doc.categories.find((c) => c.id === id)?.name || "Categoría",
+      rows:
+        id === "other-visual"
+          ? typedRows.filter((t) => small.some((c) => c.id === t.categoryId))
+          : typedRows.filter((t) => t.categoryId === id),
+    });
+  const showMonth = (month: string) =>
+    setDrill({
+      title: new Date(month + "-01T12:00:00").toLocaleDateString("es-ES", {
+        month: "long",
+        year: "numeric",
+      }),
+      rows: rows.filter((t) => t.date.startsWith(month)),
+    });
   const exportRows = () =>
     download(
       new Blob(
         [
           csv([
             ["Periodo", from + " a " + to],
-            ["Filtros", JSON.stringify(f)],
-            [
-              "Fecha",
-              "Tipo",
-              "Categoría",
-              "Nota",
-              "Importe EUR",
-              "Recibos",
-              "Nombres de adjuntos",
-            ],
+            ["Fecha", "Tipo", "Categoría", "Nota", "Importe EUR", "Recibos"],
             ...rows.map((t) => [
               t.date,
-              t.type === "expense" ? "Gasto" : "Ingreso",
-              cat(t.categoryId).name,
+              t.type,
+              doc.categories.find((c) => c.id === t.categoryId)?.name,
               t.note,
-              (t.amountCents / 100).toFixed(2).replace(".", ","),
-              t.attachments.length,
+              t.amountCents / 100,
               t.attachments.map((a) => a.name).join(" | "),
             ]),
           ]),
@@ -193,667 +261,695 @@ export default function Reports({
     );
   const exportSummary = () =>
     download(
-      new Blob([
-        csv([
-          ["Periodo", from + " a " + to],
-          ["Filtros", JSON.stringify(f)],
-          ["Mes", "Ingresos", "Gastos", "Balance"],
-          ...monthly.map((m) => [
-            m.month,
-            m.income / 100,
-            m.expense / 100,
-            m.balance / 100,
+      new Blob(
+        [
+          csv([
+            ["Periodo", from + " a " + to],
+            ["Filtros", JSON.stringify(f)],
+            ["Mes", "Ingresos", "Gastos", "Balance"],
+            ...monthly.map((m) => [
+              m.month,
+              m.income / 100,
+              m.expense / 100,
+              m.balance / 100,
+            ]),
+            [],
+            ["Categoría", ...pastMonths],
+            ...matrixCats.map((c) => [
+              c.name,
+              ...pastMonths.map((m) => categoryAmount(c.id, m) / 100),
+            ]),
+            [],
+            [
+              "Mes",
+              "Categoría",
+              "Presupuesto",
+              "Gasto total",
+              "Gasto filtrado",
+              "Restante",
+            ],
+            ...budgetReportRows(doc, months, rows).map((b) => [
+              b.month,
+              b.category,
+              b.amount / 100,
+              b.total / 100,
+              b.filtered / 100,
+              b.remaining / 100,
+            ]),
           ]),
-          [],
-          ["Categoría", ...months, "Total"],
-          ...doc.categories.map((c) => [
-            c.name,
-            ...months.map(
-              (m) =>
-                rows
-                  .filter((t) => t.categoryId === c.id && t.date.startsWith(m))
-                  .reduce((a, t) => a + t.amountCents, 0) / 100,
-            ),
-            rows
-              .filter((t) => t.categoryId === c.id)
-              .reduce((a, t) => a + t.amountCents, 0) / 100,
-          ]),
-          [],
-          [
-            "Presupuestos",
-            "Mes",
-            "Categoría",
-            "Presupuestado EUR",
-            "Gasto total EUR",
-            "Gasto filtrado EUR",
-            "Restante EUR",
-            "Consumido",
-          ],
-          ...budgetReportRows(doc, months, rows).map((d) => [
-            "",
-            d.month,
-            d.category,
-            d.amount / 100,
-            d.total / 100,
-            d.filtered / 100,
-            d.remaining / 100,
-            d.percent,
-          ]),
-        ]),
-      ]),
-      "brisa-resumen.csv",
+        ],
+        { type: "text/csv;charset=utf-8" },
+      ),
+      "brisa-informe.csv",
     );
-  const comparison = (shiftYear: boolean) => {
-    if (error) return <p>Corrige los filtros para comparar.</p>;
-    const currentDays = sameDay
-      ? effective.filter((d) => d <= today())
-      : effective;
-    const comparedDays = previousDays(currentDays, shiftYear);
-    const current = totals(rows.filter((t) => currentDays.includes(t.date)));
-    const previous = totals(
-      filterTransactions(doc.transactions, {
-        ...f,
-        from: "",
-        to: "",
-        months: [],
-      }).filter((t) => comparedDays.includes(t.date)),
-    );
-    const percent = comparePercent(current.expense, previous.expense);
-    return (
-      <p>
-        {comparedDays[0] || "—"} → {comparedDays.at(-1) || "—"} ·{" "}
-        {comparedDays.length} días seleccionados ·{" "}
-        {previous.count
-          ? `Gastos ${money(previous.expense)} · Ingresos ${money(previous.income)} · Balance ${money(previous.balance)}`
-          : "Sin registros"}{" "}
-        · Variación gasto:{" "}
-        {percent === null
-          ? "No disponible (base cero)"
-          : percent.toLocaleString("es-ES", { maximumFractionDigits: 1 }) +
-            " %"}{" "}
-        · Base actual: {currentDays[0] || "—"} → {currentDays.at(-1) || "—"}
-      </p>
-    );
-  };
-  return (
-    <>
-      <div className="page-title">
-        <div>
-          <small>ENTIENDE TU DINERO</small>
-          <h1>Informes</h1>
-          <p>Una perspectiva clara de cada movimiento.</p>
-        </div>
-        <button onClick={() => setFilters(!filters)}>☷ Filtros</button>
-      </div>
-      <p className="print-context">
-        Periodo {from} → {to} · {days} días efectivos · {rows.length}{" "}
-        movimientos. Filtros: {JSON.stringify(f)}
-      </p>
-      {filters && (
-        <section className="card report-filters">
-          <button
-            className="mobile-filter-close"
-            onClick={() => setFilters(false)}
-          >
-            Aplicar filtros y cerrar ✓
-          </button>
-          <div className="toolbar">
-            <select
-              aria-label="Periodo predefinido"
-              defaultValue="all"
-              onChange={(e) => preset(e.target.value)}
-            >
-              {[
-                ["all", "Todo el histórico"],
-                ["month", "Este mes"],
-                ["previous", "Mes anterior"],
-                ["year", "Este año"],
-                ["lastyear", "Año anterior"],
-                ["3", "Últimos 3 meses"],
-                ["6", "Últimos 6 meses"],
-                ["12", "Últimos 12 meses"],
-              ].map(([v, l]) => (
-                <option value={v} key={v}>
-                  {l}
-                </option>
-              ))}
-            </select>
-            <button onClick={() => setF(blankFilter())}>Limpiar filtros</button>
-            <button
-              onClick={() => {
-                const name = prompt("Nombre de la vista favorita");
-                if (name) onFavorite(name, f);
-              }}
-            >
-              ☆ Guardar vista
-            </button>
-            <select
-              aria-label="Vistas favoritas"
-              value=""
-              onChange={(e) => {
-                if (e.target.value)
-                  setF(doc.settings.favorites[Number(e.target.value)].filter);
-              }}
-            >
-              <option value="">Vistas favoritas</option>
-              {doc.settings.favorites.map((v, i) => (
-                <option value={i} key={i}>
-                  {v.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="filter-grid">
-            <label>
-              Desde
-              <input
-                type="date"
-                value={f.from}
-                onChange={(e) => update("from", e.target.value)}
-              />
-            </label>
-            <label>
-              Hasta
-              <input
-                type="date"
-                value={f.to}
-                onChange={(e) => update("to", e.target.value)}
-              />
-            </label>
-            <label>
-              Tipo
-              <select
-                value={f.type}
-                onChange={(e) => update("type", e.target.value)}
-              >
-                <option value="both">Gastos e ingresos</option>
-                <option value="expense">Gastos</option>
-                <option value="income">Ingresos</option>
-              </select>
-            </label>
-            <label>
-              Buscar nota
-              <input
-                value={f.text}
-                onChange={(e) => update("text", e.target.value)}
-                placeholder="Sin distinguir tildes"
-              />
-            </label>
-            <label>
-              Mínimo €
-              <input
-                value={f.min}
-                onChange={(e) => update("min", e.target.value)}
-                inputMode="decimal"
-              />
-            </label>
-            <label>
-              Máximo €
-              <input
-                value={f.max}
-                onChange={(e) => update("max", e.target.value)}
-                inputMode="decimal"
-              />
-            </label>
-            <label>
-              Recibos
-              <select
-                value={f.receipts}
-                onChange={(e) => update("receipts", e.target.value)}
-              >
-                <option value="all">Todos</option>
-                <option value="with">Con recibos</option>
-                <option value="without">Sin recibos</option>
-              </select>
-            </label>
-            <label>
-              Año y meses (varios)
-              <select
-                multiple
-                value={f.months}
-                onChange={(e) =>
-                  update(
-                    "months",
-                    Array.from(e.target.selectedOptions, (x) => x.value),
-                  )
-                }
-              >
-                {[...new Set(doc.transactions.map((t) => t.date.slice(0, 7)))]
-                  .sort()
-                  .map((m) => (
-                    <option key={m}>{m}</option>
-                  ))}
-              </select>
-            </label>
-            <label>
-              Categorías (varias)
-              <select
-                multiple
-                value={f.categories}
-                onChange={(e) =>
-                  update(
-                    "categories",
-                    Array.from(e.target.selectedOptions, (x) => x.value),
-                  )
-                }
-              >
-                {doc.categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.icon} {c.name} (
-                    {c.type === "expense" ? "gasto" : "ingreso"})
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <p>
-            Los presets sustituyen rango y meses. El rango y los meses manuales
-            se intersectan. {rows.length} movimientos · {from} → {to} ·{" "}
-            {f.type !== "both" ? "Balance parcial" : ""}
-          </p>
-          <small>Filtros activos: {JSON.stringify(f)}</small>
-          {error && <p className="error">{error}</p>}
-        </section>
-      )}
-      <div className="stats">
-        <section className="card">
-          <small>INGRESOS FILTRADOS</small>
-          <h2 className="income">{money(sum.income)}</h2>
-        </section>
-        <section className="card">
-          <small>GASTOS FILTRADOS</small>
-          <h2>{money(sum.expense)}</h2>
-        </section>
-        <section className="card accent">
-          <small>BALANCE {f.type === "both" ? "FILTRADO" : "PARCIAL"}</small>
-          <h2>{money(sum.balance)}</h2>
-        </section>
-      </div>
-      <section className="card metrics">
-        <span>
-          <b>{rows.length}</b> movimientos
-        </span>
-        <span>
-          Media por gasto{" "}
-          <b>
-            {money(
-              Math.round(
-                sum.expense /
-                  (rows.filter((t) => t.type === "expense").length || 1),
-              ),
-            )}
-          </b>
-        </span>
-        <span>
-          Media diaria{" "}
-          <b>
-            {days ? money(Math.round(sum.expense / days)) : "No disponible"}
-          </b>{" "}
-          / {days} días
-        </span>
-        <span>
-          Mayor categoría <b>{expenses[0]?.name || "Sin registros"}</b>
-        </span>
-        <span>
-          Mayor gasto{" "}
-          <b>
-            {money(
-              Math.max(
-                0,
-                ...rows
-                  .filter((t) => t.type === "expense")
-                  .map((t) => t.amountCents),
-              ),
-            )}
-          </b>
-        </span>
-        <span>
-          Ahorro{" "}
-          <b>
-            {savings
-              ? ((sum.balance / sum.income) * 100)
-                  .toFixed(1)
-                  .replace(".", ",") + " %"
-              : "No disponible"}
-          </b>
-          {!savings && (
-            <small>
-              {" "}
-              Requiere ambos tipos, ingresos positivos y ningún filtro que
-              distorsione el total.
-            </small>
-          )}
-        </span>
-      </section>
-      <div className="report-grid">
-        <section className="card">
-          <div className="section-title">
-            <h2>Evolución</h2>
-            <select value={group} onChange={(e) => setGroup(e.target.value)}>
-              {[
-                ["day", "Día"],
-                ["week", "Semana"],
-                ["month", "Mes"],
-                ["year", "Año"],
-              ].map(([v, l]) => (
-                <option key={v} value={v}>
-                  {l}
-                </option>
-              ))}
-            </select>
-          </div>
-          <ResponsiveContainer width="100%" height={290}>
-            <BarChart
-              data={timeline}
-              onClick={(e: any) => {
-                if (e.activeLabel) {
-                  const key = String(e.activeLabel);
-                  setF({
-                    ...f,
-                    from:
-                      key.length === 7
-                        ? key + "-01"
-                        : key.length === 4
-                          ? key + "-01-01"
-                          : key,
-                    to:
-                      key.length === 7
-                        ? monthEnd(key)
-                        : key.length === 4
-                          ? key + "-12-31"
-                          : key,
-                    months: [],
-                  });
-                }
-              }}
-            >
-              <CartesianGrid vertical={false} stroke="#ecece6" />
-              <XAxis dataKey="key" />
-              <YAxis />
-              <Tooltip
-                formatter={(v: any) => money(Math.round(Number(v) * 100))}
-              />
-              <Legend />
-              <Bar dataKey="Ingresos" fill="#579b80" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="Gastos" fill="#efc84b" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </section>
-        <section className="card">
-          <h2>Balance acumulado del periodo</h2>
-          <p>Parte de cero; no representa un saldo bancario.</p>
-          <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={[{ key: "Inicio", Acumulado: 0 }, ...timeline]}>
-              <XAxis dataKey="key" />
-              <YAxis />
-              <Tooltip
-                formatter={(v: any) => money(Math.round(Number(v) * 100))}
-              />
-              <Line
-                type="monotone"
-                dataKey="Acumulado"
-                stroke="#345b4b"
-                strokeWidth={3}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </section>
-        {(["expense", "income"] as const)
-          .filter((k) => f.type === "both" || f.type === k)
-          .map((kind) => (
-            <section className="card" key={kind}>
-              <h2>
-                {kind === "expense"
-                  ? "Distribución y ranking de gastos"
-                  : "Distribución de ingresos"}
-              </h2>
-              <ResponsiveContainer width="100%" height={240}>
-                <PieChart>
-                  <Pie
-                    data={categoryTotals(kind)}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={62}
-                    outerRadius={95}
-                    onClick={(c: any) => update("categories", [c.id])}
-                  >
-                    {categoryTotals(kind).map((c) => (
-                      <Cell key={c.id} fill={c.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(v: any) => money(Number(v))} />
-                </PieChart>
-              </ResponsiveContainer>
-              {categoryTotals(kind).map((c) => (
-                <button
-                  className="ranking"
-                  key={c.id}
-                  onClick={() => update("categories", [c.id])}
-                >
-                  <span>
-                    {c.icon} {c.name}
-                  </span>
-                  <b>
-                    {money(c.value)} ·{" "}
-                    {(
-                      (c.value /
-                        (kind === "expense" ? sum.expense : sum.income)) *
-                      100
-                    )
-                      .toFixed(1)
-                      .replace(".", ",")}{" "}
-                    %
-                  </b>
-                  <i
-                    style={{
-                      width:
-                        (c.value /
-                          (kind === "expense" ? sum.expense : sum.income)) *
-                          100 +
-                        "%",
-                      background: c.color,
-                    }}
-                  />
-                </button>
-              ))}
-            </section>
+  const periodControls = (
+    <div className="analytics-period">
+      <label>
+        Año
+        <select
+          aria-label="Año"
+          value={year}
+          onChange={(e) =>
+            setF({
+              ...f,
+              from: e.target.value === "all" ? "" : e.target.value + "-01-01",
+              to: e.target.value === "all" ? "" : e.target.value + "-12-31",
+              months: [],
+            })
+          }
+        >
+          <option value="all">Todo</option>
+          {years.map((y) => (
+            <option key={y}>{y}</option>
           ))}
+        </select>
+      </label>
+      <button onClick={() => setFilters(true)}>
+        ☷{" "}
+        {f.categories.length ||
+        f.months.length ||
+        f.text ||
+        f.min ||
+        f.max ||
+        f.receipts !== "all"
+          ? "Filtros activos"
+          : "Filtrar"}
+      </button>
+    </div>
+  );
+  const donut = (
+    <div className="chart-card">
+      <div className="chart-summary">
+        <span>Total {chartKind === "expense" ? "gastado" : "ingresado"}</span>
+        <b>{money(typedTotal)}</b>
       </div>
-      <section className="card">
-        <h2>Comparación con periodos anteriores</h2>
-        <label>
-          <input
-            type="checkbox"
-            checked={sameDay}
-            onChange={(e) => setSameDay(e.target.checked)}
-          />{" "}
-          Comparar hasta hoy para periodos en curso
-        </label>
-        <p>
-          Mismos filtros no temporales. Intervalos completos según la selección;
-          sin registros no implica ausencia de gastos.
-        </p>
-        <h3>Periodo anterior</h3>
-        {comparison(false)}
-        <h3>Equivalente del año anterior</h3>
-        {comparison(true)}
-      </section>
-      <BudgetReport doc={doc} months={months} rows={rows} />
-      <section className="card">
-        <div className="section-title">
-          <h2>Resumen mensual</h2>
-          <button onClick={exportSummary}>↓ CSV resumen y matriz</button>
-        </div>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Mes</th>
-                <th>Ingresos</th>
-                <th>Gastos</th>
-                <th>Balance</th>
-                <th>Presupuesto global / gasto total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {monthly.map((m) => (
-                <tr key={m.month}>
-                  <td>
-                    {m.month}
-                    {m.month === today().slice(0, 7)
-                      ? " · en curso"
-                      : m.month > today().slice(0, 7)
-                        ? " · futuro"
-                        : ""}
-                  </td>
-                  <td>{money(m.income)}</td>
-                  <td>{money(m.expense)}</td>
-                  <td>{money(m.balance)}</td>
-                  <td>
-                    {budget(doc, m.month) === undefined
-                      ? "Sin presupuesto"
-                      : money(budget(doc, m.month)!)}{" "}
-                    /{" "}
-                    {money(
-                      totals(
-                        doc.transactions.filter((t) =>
-                          t.date.startsWith(m.month),
-                        ),
-                      ).expense,
-                    )}
-                  </td>
-                </tr>
+      {!distribution.length ? (
+        <p className="empty">Sin movimientos en este periodo.</p>
+      ) : (
+        <ResponsiveContainer width="100%" height={mobile ? 220 : 310}>
+          <PieChart>
+            <Pie
+              data={pieData}
+              dataKey="value"
+              nameKey="name"
+              innerRadius={mobile ? 55 : 78}
+              outerRadius={mobile ? 100 : 125}
+              paddingAngle={2}
+              labelLine={false}
+              label={({
+                cx,
+                cy,
+                midAngle,
+                innerRadius,
+                outerRadius,
+                percent,
+              }: any) => {
+                const rad = (-(midAngle || 0) * Math.PI) / 180,
+                  r = (innerRadius + outerRadius) / 2;
+                return (
+                  <text
+                    x={cx + r * Math.cos(rad)}
+                    y={cy + r * Math.sin(rad)}
+                    fill="#253b31"
+                    fontSize={mobile ? 11 : 13}
+                    fontWeight={700}
+                    textAnchor="middle"
+                    dominantBaseline="central"
+                  >
+                    {(percent * 100).toLocaleString("es-ES", {
+                      maximumFractionDigits: 1,
+                    })}
+                    %
+                  </text>
+                );
+              }}
+              onClick={(c: any) => openCategory(c.id)}
+            >
+              {pieData.map((c) => (
+                <Cell key={c.id} fill={c.color} />
               ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      <section className="card">
-        <h2>Matriz categoría × mes</h2>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Categoría</th>
-                {months.map((m) => (
-                  <th key={m}>{m}</th>
-                ))}
-                <th>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {doc.categories
-                .filter((c) => rows.some((t) => t.categoryId === c.id))
-                .map((c) => (
-                  <tr key={c.id}>
-                    <td>
-                      <button onClick={() => update("categories", [c.id])}>
-                        {c.name}
-                      </button>
-                    </td>
-                    {months.map((m) => (
-                      <td key={m}>
-                        {money(
-                          rows
-                            .filter(
-                              (t) =>
-                                t.categoryId === c.id && t.date.startsWith(m),
-                            )
-                            .reduce((a, t) => a + t.amountCents, 0),
-                        )}
-                      </td>
-                    ))}
-                    <td>
-                      {money(
-                        rows
-                          .filter((t) => t.categoryId === c.id)
-                          .reduce((a, t) => a + t.amountCents, 0),
-                      )}
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      <section className="card">
-        <h2>Conceptos más frecuentes</h2>
-        {concepts.slice(0, 20).map((c) => (
-          <button
-            className="ranking"
-            title={c.originals}
-            key={c.note}
-            onClick={() =>
-              update("text", c.note === "(Sin nota)" ? "" : c.note)
-            }
-          >
-            <span>
-              {c.originals || "Sin nota"} · {c.count} movimientos
+            </Pie>
+            <Tooltip formatter={(v: any) => money(Number(v))} />
+          </PieChart>
+        </ResponsiveContainer>
+      )}
+      <div className="category-ranking">
+        {(mobile
+          ? distribution.slice(rankPage * 4, rankPage * 4 + 4)
+          : distribution
+        ).map((c) => (
+          <button key={c.id} onClick={() => openCategory(c.id)}>
+            <span className="category-icon" style={{ background: c.color }}>
+              {c.icon}
             </span>
+            <div>
+              <span>{c.name}</span>
+              <div className="ranking-track">
+                <i
+                  style={{
+                    width: (c.value / typedTotal) * 100 + "%",
+                    background: c.color,
+                  }}
+                />
+              </div>
+            </div>
             <b>
-              Gastos {money(c.expense)} · Ingresos {money(c.income)}
+              {money(c.value)}
+              <small>
+                {((c.value / typedTotal) * 100).toLocaleString("es-ES", {
+                  maximumFractionDigits: 1,
+                })}
+                %
+              </small>
             </b>
           </button>
         ))}
-      </section>
-      <section className="card">
+      </div>
+      {mobile && distribution.length > 4 && (
+        <div className="category-pagination">
+          <button
+            disabled={!rankPage}
+            onClick={() => setRankPage(rankPage - 1)}
+          >
+            ←
+          </button>
+          <small>
+            Categorías {rankPage * 4 + 1}–
+            {Math.min(distribution.length, rankPage * 4 + 4)} de{" "}
+            {distribution.length}
+          </small>
+          <button
+            disabled={(rankPage + 1) * 4 >= distribution.length}
+            onClick={() => setRankPage(rankPage + 1)}
+          >
+            →
+          </button>
+        </div>
+      )}
+      <small>
+        Las categorías pequeñas se agrupan solo en la gráfica; toca «Otras
+        categorías» para verlas.
+      </small>
+    </div>
+  );
+  const evolution = (
+    <div className="chart-card">
+      <div className="chart-summary">
+        <span>Evolución mensual</span>
+        <b>{money(typedTotal)}</b>
+      </div>
+      <ResponsiveContainer width="100%" height={mobile ? 260 : 310}>
+        <LineChart
+          data={timeline}
+          onClick={(e: any) => {
+            const m = timeline.find((t) => t.label === e.activeLabel);
+            if (m) showMonth(m.month);
+          }}
+        >
+          <CartesianGrid vertical={false} stroke="#ecece6" />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+          <YAxis width={45} tick={{ fontSize: 10 }} />
+          <Tooltip formatter={(v: any) => money(Math.round(Number(v) * 100))} />
+          <Line
+            dataKey={chartKind === "expense" ? "Gastos" : "Ingresos"}
+            type="monotone"
+            stroke={chartKind === "expense" ? "#db8870" : "#5a9e81"}
+            strokeWidth={3}
+            dot={{ r: 4 }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+      <p>
+        Media mensual: {money(Math.round(typedTotal / (months.length || 1)))} ·{" "}
+        {months.length} meses.
+      </p>
+      <small>
+        Toca un mes para consultar sus movimientos. Los meses actuales están en
+        curso.
+      </small>
+    </div>
+  );
+  const balanceChart = (
+    <div className="chart-card">
+      <h2>Balance acumulado del periodo</h2>
+      <ResponsiveContainer width="100%" height={mobile ? 260 : 280}>
+        <LineChart data={[{ label: "Inicio", Balance: 0 }, ...timeline]}>
+          <CartesianGrid vertical={false} stroke="#ecece6" />
+          <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+          <YAxis width={48} tick={{ fontSize: 10 }} />
+          <Tooltip formatter={(v: any) => money(Math.round(Number(v) * 100))} />
+          <Line
+            dataKey="Balance"
+            stroke="#52836b"
+            strokeWidth={3}
+            dot={false}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+      <small>
+        Parte de cero. Balance de los movimientos seleccionados; no es un saldo
+        bancario.
+      </small>
+    </div>
+  );
+  const monthlyTable = (
+    <section className="card monthly-summary">
+      <div className="section-title">
+        <h2>Resumen mensual</h2>
+        <small>Importes en euros</small>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Mes</th>
+            <th>Gastos</th>
+            <th>Ingresos</th>
+            <th>Balance</th>
+          </tr>
+        </thead>
+        <tbody>
+          {visibleMonthly.map((m) => (
+            <tr key={m.month} onClick={() => showMonth(m.month)}>
+              <td>
+                <b>{MONTHS[Number(m.month.slice(5)) - 1]}</b>
+                <small>
+                  {m.month.slice(0, 4)}
+                  {m.month === currentMonth ? " · actual" : ""}
+                </small>
+              </td>
+              <td>{compact(m.expense)}</td>
+              <td>{compact(m.income)}</td>
+              <td className={m.balance >= 0 ? "income" : "error"}>
+                {compact(m.balance)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {mobile && monthly.length > 6 && (
+        <div className="category-pagination">
+          <button
+            disabled={!monthlyPage}
+            onClick={() => setMonthlyPage(monthlyPage - 1)}
+          >
+            ← Más recientes
+          </button>
+          <button
+            disabled={(monthlyPage + 1) * 6 >= monthly.length}
+            onClick={() => setMonthlyPage(monthlyPage + 1)}
+          >
+            Anteriores →
+          </button>
+        </div>
+      )}
+    </section>
+  );
+  const matrix = (
+    <section className="card category-matrix" ref={matrixRef}>
+      <div className="section-title">
+        <h2>Categoría por mes</h2>
+        <div className="matrix-navigation">
+          <button
+            aria-label="Meses anteriores"
+            disabled={matrixOffset + matrixCount >= pastMonths.length}
+            onClick={() => setMatrixOffset(matrixOffset + matrixCount)}
+          >
+            ←
+          </button>
+          <button
+            aria-label="Meses más recientes"
+            disabled={!matrixOffset}
+            onClick={() =>
+              setMatrixOffset(Math.max(0, matrixOffset - matrixCount))
+            }
+          >
+            →
+          </button>
+        </div>
+      </div>
+      <p>
+        Verde: mejora frente al mes anterior. Rojo: aumento de gastos o
+        disminución de ingresos.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Categoría</th>
+            {matrixMonths.map((m) => (
+              <th key={m}>
+                {MONTHS[Number(m.slice(5)) - 1]}
+                <small>{m.slice(0, 4)}</small>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {(mobile
+            ? matrixCats.slice(matrixPage * 5, matrixPage * 5 + 5)
+            : matrixCats
+          ).map((c) => (
+            <tr key={c.id}>
+              <td>
+                <span className="matrix-category">
+                  <span style={{ background: c.color }}>{c.icon}</span>
+                  <b>{c.name}</b>
+                </span>
+              </td>
+              {matrixMonths.map((m) => {
+                const value = categoryAmount(c.id, m),
+                  previous = categoryAmount(
+                    c.id,
+                    adjacentMonth(m, -1),
+                    baseline,
+                  ),
+                  hasPrevious = baseline.some(
+                    (t) =>
+                      t.categoryId === c.id &&
+                      t.date.startsWith(adjacentMonth(m, -1)),
+                  ),
+                  delta = value - previous,
+                  good = c.type === "expense" ? delta < 0 : delta > 0;
+                return (
+                  <td
+                    key={m}
+                    className={
+                      hasPrevious && delta
+                        ? good
+                          ? "trend-good"
+                          : "trend-bad"
+                        : "trend-neutral"
+                    }
+                  >
+                    <button
+                      title={
+                        hasPrevious
+                          ? "Cambio registrado: " + money(delta)
+                          : "Sin registros anteriores"
+                      }
+                      onClick={() =>
+                        setDrill({
+                          title: c.name + " · " + m,
+                          rows: rows.filter(
+                            (t) =>
+                              t.categoryId === c.id && t.date.startsWith(m),
+                          ),
+                        })
+                      }
+                    >
+                      {compact(value)}
+                      {hasPrevious && delta !== 0 && (
+                        <small>
+                          {delta > 0 ? "↑" : "↓"} {compact(Math.abs(delta))}
+                        </small>
+                      )}
+                    </button>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {mobile && matrixCats.length > 5 && (
+        <div className="category-pagination">
+          <button
+            disabled={!matrixPage}
+            onClick={() => setMatrixPage(matrixPage - 1)}
+          >
+            ← Categorías
+          </button>
+          <small>
+            {matrixPage + 1} / {Math.ceil(matrixCats.length / 5)}
+          </small>
+          <button
+            disabled={(matrixPage + 1) * 5 >= matrixCats.length}
+            onClick={() => setMatrixPage(matrixPage + 1)}
+          >
+            Categorías →
+          </button>
+        </div>
+      )}
+      <small>
+        La ausencia de registros no garantiza que no haya habido gastos.
+      </small>
+    </section>
+  );
+  const monthlyRows = rows.filter((t) => t.date.startsWith(overviewMonth)),
+    monthlyTotal = totals(monthlyRows),
+    globalBudget = budget(doc, overviewMonth),
+    spentTotal = totals(
+      doc.transactions.filter((t) => t.date.startsWith(overviewMonth)),
+    ).expense;
+  const overview = (
+    <div className="mobile-report-overview">
+      <section className="card mobile-month-stats">
         <div className="section-title">
-          <h2>Movimientos filtrados · {rows.length}</h2>
+          <h2>Estadísticas mensuales</h2>
+          <input
+            aria-label="Mes del resumen"
+            type="month"
+            value={overviewMonth}
+            onChange={(e) => setOverviewMonth(e.target.value)}
+          />
+        </div>
+        <div className="compact-stats">
           <div>
-            <button onClick={exportRows}>↓ CSV</button>
-            <button onClick={() => window.print()}>Imprimir / PDF</button>
+            <small>Gastos</small>
+            <b>{money(monthlyTotal.expense)}</b>
+          </div>
+          <div>
+            <small>Ingresos</small>
+            <b className="income">{money(monthlyTotal.income)}</b>
+          </div>
+          <div>
+            <small>Balance del mes</small>
+            <b>{money(monthlyTotal.balance)}</b>
           </div>
         </div>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                {[
-                  ["date", "Fecha"],
-                  ["categoryId", "Categoría"],
-                  ["type", "Tipo"],
-                  ["note", "Nota"],
-                  ["amountCents", "Importe"],
-                ].map(([k, l]) => (
-                  <th key={k}>
-                    <button
-                      onClick={() => {
-                        setSort(k);
-                        setAscending(!ascending);
-                      }}
-                    >
-                      {l} ↕
-                    </button>
-                  </th>
-                ))}
-                <th>Recibos</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ordered.map((t) => (
-                <tr
-                  key={t.id}
-                  onClick={() => onEdit(t)}
-                  tabIndex={0}
-                  onKeyDown={(e) => e.key === "Enter" && onEdit(t)}
-                >
-                  <td>{t.date}</td>
-                  <td>{cat(t.categoryId).name}</td>
-                  <td>{t.type === "expense" ? "Gasto" : "Ingreso"}</td>
-                  <td>{t.note || "Sin nota"}</td>
-                  <td>{money(t.amountCents)}</td>
-                  <td>{t.attachments.length} · Editar →</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {!rows.length && (
-          <p className="empty">
-            Sin movimientos con estos filtros. Prueba a ampliar el periodo.
-          </p>
-        )}
       </section>
-    </>
+      <button className="card report-budget-card" onClick={onBudgets}>
+        <div className="section-title">
+          <h2>Presupuesto mensual</h2>
+          <span>›</span>
+        </div>
+        <div className="budget-card-body">
+          <dl>
+            <div>
+              <dt>Presupuesto</dt>
+              <dd>
+                {globalBudget === undefined
+                  ? "Sin definir"
+                  : money(globalBudget)}
+              </dd>
+            </div>
+            <div>
+              <dt>Gastado</dt>
+              <dd>{money(spentTotal)}</dd>
+            </div>
+            <div className="remaining">
+              <dt>Restante</dt>
+              <dd>
+                {globalBudget === undefined
+                  ? "—"
+                  : money(globalBudget - spentTotal)}
+              </dd>
+            </div>
+          </dl>
+          <BudgetRing amount={globalBudget} spent={spentTotal} />
+        </div>
+      </button>
+      <button
+        className="report-link card"
+        onClick={() => setReportView("monthly")}
+      >
+        <span>▤ Resumen mensual</span>
+        <span>›</span>
+      </button>
+      <button
+        className="report-link card"
+        onClick={() => setReportView("matrix")}
+      >
+        <span>▦ Categorías por mes</span>
+        <span>›</span>
+      </button>
+    </div>
+  );
+  return (
+    <div className={mobile ? "mobile-analytics" : "desktop-analytics"}>
+      <div className="page-title analytics-title">
+        <div>
+          <small>
+            {mode === "charts"
+              ? "ENTIENDE EN QUÉ SE VA"
+              : "TUS PLANES, EN PERSPECTIVA"}
+          </small>
+          <h1>{mode === "charts" ? "Gráficos" : "Informes"}</h1>
+        </div>
+        {mobile && mode === "reports" && reportView !== "overview" ? (
+          <button onClick={() => setReportView("overview")}>← Volver</button>
+        ) : null}
+      </div>
+      {periodControls}
+      {error && <p className="error">{error}</p>}
+      <p className="analytics-filter-caption">
+        {from} → {to} · {rows.length} movimientos
+        {f.type !== "both" ? " · Balance parcial" : ""}
+      </p>
+      {mode === "charts" ? (
+        <>
+          <div className="segmented chart-kind">
+            {(["expense", "income"] as const).map((k) => (
+              <button
+                key={k}
+                className={chartKind === k ? "active" : ""}
+                onClick={() => {
+                  setKind(k);
+                  setF({ ...f, type: "both" });
+                }}
+              >
+                {k === "expense" ? "Gastos" : "Ingresos"}
+              </button>
+            ))}
+          </div>
+          {mobile ? (
+            <>
+              <div className="chart-view-tabs">
+                {[
+                  ["distribution", "Distribución"],
+                  ["evolution", "Evolución"],
+                  ["balance", "Balance"],
+                ].map(([v, l]) => (
+                  <button
+                    key={v}
+                    className={chartView === v ? "active" : ""}
+                    onClick={() => setChartView(v)}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <section className="card mobile-chart">
+                {chartView === "distribution"
+                  ? donut
+                  : chartView === "evolution"
+                    ? evolution
+                    : balanceChart}
+              </section>
+            </>
+          ) : (
+            <div className="desktop-chart-grid">
+              <section className="card">{donut}</section>
+              <section className="card">{evolution}</section>
+              <section className="card wide">{balanceChart}</section>
+            </div>
+          )}
+        </>
+      ) : mobile ? (
+        reportView === "overview" ? (
+          overview
+        ) : reportView === "monthly" ? (
+          monthlyTable
+        ) : (
+          matrix
+        )
+      ) : (
+        <>
+          <div className="stats">
+            <section className="card">
+              <small>INGRESOS</small>
+              <h2 className="income">{money(sum.income)}</h2>
+            </section>
+            <section className="card">
+              <small>GASTOS</small>
+              <h2>{money(sum.expense)}</h2>
+            </section>
+            <section className="card accent">
+              <small>BALANCE REGISTRADO</small>
+              <h2>{money(sum.balance)}</h2>
+            </section>
+          </div>
+          <div className="desktop-report-grid">
+            {monthlyTable}
+            {matrix}
+          </div>
+          <BudgetReport doc={doc} months={months} rows={rows} />
+        </>
+      )}
+      {mode === "reports" && (!mobile || reportView !== "overview") && (
+        <details className="report-export">
+          <summary>Exportar informe</summary>
+          <div className="toolbar">
+            <button onClick={exportSummary}>↓ CSV del informe</button>
+            <button onClick={exportRows}>↓ CSV de movimientos</button>
+            <button onClick={() => window.print()}>Imprimir / PDF</button>
+          </div>
+        </details>
+      )}
+      {filters && (
+        <div className="overlay filter-overlay">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Filtros del informe"
+          >
+            <ReportFilters
+              doc={doc}
+              filter={f}
+              onChange={setF}
+              onClose={() => setFilters(false)}
+              onFavorite={onFavorite}
+            />
+          </section>
+        </div>
+      )}
+      {drill && (
+        <div className="overlay">
+          <section
+            className="modal chart-detail"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Detalle de gráfica"
+          >
+            <header>
+              <div>
+                <small>MOVIMIENTOS QUE EXPLICAN EL DATO</small>
+                <h2>{drill.title}</h2>
+              </div>
+              <button onClick={() => setDrill(null)}>✕</button>
+            </header>
+            <p>
+              {drill.rows.length} movimientos · Gastos{" "}
+              {money(totals(drill.rows).expense)} · Ingresos{" "}
+              {money(totals(drill.rows).income)}
+            </p>
+            {drill.rows.map((t) => (
+              <button
+                className="transaction"
+                key={t.id}
+                onClick={() => onEdit(t)}
+              >
+                <span
+                  className="category-icon"
+                  style={{
+                    background: doc.categories.find(
+                      (c) => c.id === t.categoryId,
+                    )?.color,
+                  }}
+                >
+                  {doc.categories.find((c) => c.id === t.categoryId)?.icon}
+                </span>
+                <span className="transaction-note">
+                  <b>{t.note || "Sin nota"}</b>
+                  <small>{t.date}</small>
+                </span>
+                <strong>{money(t.amountCents)}</strong>
+              </button>
+            ))}
+            {!drill.rows.length && <p>Sin movimientos registrados.</p>}
+          </section>
+        </div>
+      )}
+    </div>
   );
 }

@@ -29,12 +29,13 @@ export interface Category {
   archived?: boolean;
 }
 export interface Document {
+  budgetChanges?: import("./budgets").BudgetChange[];
   schemaVersion: 1;
   currency: "EUR";
   revision: string;
   transactions: Transaction[];
   categories: Category[];
-  budgets: Record<string, Record<string, number>>;
+  budgets: Record<string, Record<string, number | null>>;
   settings: {
     reminder: boolean;
     reminderTime: string;
@@ -208,7 +209,14 @@ export function totals(ts: Transaction[]) {
   return { income, expense, balance: income - expense, count: ts.length };
 }
 export function budget(doc: Document, month: string, cat = "global") {
-  return doc.budgets[month]?.[cat] ?? doc.budgets.default?.[cat];
+  const exact = doc.budgets[month]?.[cat];
+  if (exact !== undefined) return exact ?? undefined;
+  const change = (doc.budgetChanges || [])
+    .filter((c) => c.categoryId === cat && c.from <= month)
+    .sort((a, b) => b.from.localeCompare(a.from))[0];
+  return change
+    ? (change.amountCents ?? undefined)
+    : (doc.budgets.default?.[cat] ?? undefined);
 }
 export function validate(raw: unknown): Document {
   const d = raw as Document;
@@ -294,8 +302,26 @@ export function validate(raw: unknown): Document {
   }
   for (const b of Object.values(d.budgets))
     for (const n of Object.values(b))
-      if (!Number.isSafeInteger(n) || n < 0)
+      if (n !== null && (!Number.isSafeInteger(n) || n < 0))
         throw Error("Presupuesto inválido");
+  if (d.budgetChanges !== undefined) {
+    if (!Array.isArray(d.budgetChanges))
+      throw Error("Historial de presupuestos inválido");
+    for (const c of d.budgetChanges)
+      if (
+        !c.id ||
+        !/^\d{4}-(0[1-9]|1[0-2])$/.test(c.from) ||
+        !(
+          c.categoryId === "global" ||
+          d.categories.some(
+            (cat) => cat.id === c.categoryId && cat.type === "expense",
+          )
+        ) ||
+        (c.amountCents !== null &&
+          (!Number.isSafeInteger(c.amountCents) || c.amountCents < 0))
+      )
+        throw Error("Cambio de presupuesto inválido");
+  }
   return { ...d, revision: d.revision || uid() };
 }
 export function signature(b: Uint8Array, mime: string) {
