@@ -6,3 +6,4 @@ dist/
 CONTRASENA.txt
 *.tsbuildinfo
 qa-artifacts/
+public/pdf-assets/

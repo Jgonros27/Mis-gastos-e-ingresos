@@ -4,7 +4,7 @@ PWA frontend en español, React + TypeScript + Vite. No usa servidor, cuentas, I
 
 ## Ejecutar y desplegar
 
-Node 22.12+ o 24. `npm install`, `npm run dev`. Pruebas: `npm test`. Producción: `npm run build`, `npm run preview`. Publicar **todo** `dist` en alojamiento estático HTTPS; la base relativa permite subdirectorios. PDF.js y su worker se incluyen y precachean localmente.
+Node 22.12+ o 24. Primero copiar `CONTRASENA.example.txt` a `CONTRASENA.txt` y poner la contraseña propia en la primera línea (el archivo local existente ya está configurado). `npm install`, `npm run dev`. Pruebas: `npm test`. Producción: `npm run build`, `npm run preview`. Publicar **todo** `dist` en alojamiento estático HTTPS; la base relativa permite subdirectorios. PDF.js y su worker se incluyen y precachean localmente. CONTRASENA.txt permanece local, excluido de Git.
 
 Cambiar la primera línea de `CONTRASENA.txt` y recompilar para cambiar la contraseña. Se incluye solamente su SHA-256 en el bundle. Es un bloqueo básico frontend, evadible mediante inspección; no cifra el documento. Cookie de sesión sin caducidad, Path=/, SameSite=Lax y Secure en HTTPS. El navegador decide cuánto conserva la sesión.
 

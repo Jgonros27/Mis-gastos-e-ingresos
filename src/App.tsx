@@ -1,13 +1,1509 @@
-import {useEffect,useRef,useState} from 'react';
-import {Home,CalendarDays,ChartNoAxesCombined,Settings,Plus,ArrowUpRight,ArrowDownLeft,Wallet,Search,LogOut,Download,Bell,ShieldCheck} from 'lucide-react';
-import {useRegisterSW} from 'virtual:pwa-register/react';
-import {emptyDocument,today,uid,money,totals,normalize,cents,budget,download,validate,type Document,type Transaction,type Attachment,type Filter} from './model';
-import {loadDocument,persist,storageMode,previousDocument} from './storage';
-import {previewImport,mergeImport,importSummary,type Preview} from './importer';
-import TransactionForm from './TransactionForm';
-import ReceiptViewer from './ReceiptViewer';
-import Reports from './Reports';
-declare const __PASSWORD_HASH__:string;
-const session=()=>document.cookie.split(';').some(c=>c.trim()==='brisa-session='+__PASSWORD_HASH__);
-const dateLabel=(s:string)=>new Date(s+'T12:00:00').toLocaleDateString('es-ES',{weekday:'long',day:'numeric',month:'long'});
-export default function App(){const [unlocked,setUnlocked]=useState(session),[password,setPassword]=useState(''),[loginError,setLoginError]=useState(''),[doc,setDoc]=useState<Document>(emptyDocument),[ready,setReady]=useState(false),[page,setPage]=useState('home'),[month,setMonth]=useState(today().slice(0,7)),[search,setSearch]=useState(''),[status,setStatus]=useState('Cargando…'),[message,setMessage]=useState(''),[form,setForm]=useState<{initial?:Transaction;date?:string}|null>(null),[detail,setDetail]=useState<Transaction|null>(null),[viewer,setViewer]=useState<{items:Attachment[];index:number}|null>(null),[selected,setSelected]=useState(today()),[preview,setPreview]=useState<Preview|null>(null),[replace,setReplace]=useState(false),[keepMatches,setKeepMatches]=useState(false),[install,setInstall]=useState<any>(null),[standalone,setStandalone]=useState(matchMedia('(display-mode: standalone)').matches||(navigator as any).standalone===true),[linked,setLinked]=useState('Sin archivo vinculado'),[capacity,setCapacity]=useState(''),[backupDate,setBackupDate]=useState(localStorage.getItem('brisa-backup-date')||''),[reminderCard,setReminderCard]=useState(false);const ref=useRef(doc),revision=useRef(''),fileHandle=useRef<any>(null),writeQueue=useRef<Promise<any>>(Promise.resolve());const {needRefresh:[needRefresh],offlineReady:[offlineReady],updateServiceWorker}=useRegisterSW();useEffect(()=>{loadDocument().then(({doc,recovered})=>{setDoc(doc);ref.current=doc;revision.current=doc.revision;setReady(true);setStatus(recovered?'Recuperado desde copia anterior':'Datos cargados')}).catch(e=>setMessage(e.message));const before=(e:Event)=>{e.preventDefault();setInstall(e)},installed=()=>{setStandalone(true);setInstall(null)};window.addEventListener('beforeinstallprompt',before);window.addEventListener('appinstalled',installed);const storage=(e:StorageEvent)=>{if(e.key==='brisa-revision'&&e.newValue!==revision.current)setMessage('Hay cambios en otra pestaña. Descarga tus cambios y recarga para evitar conflictos.')};window.addEventListener('storage',storage);navigator.storage?.estimate().then(s=>setCapacity('Uso aproximado '+Math.round((s.usage||0)/1024/1024)+' MB / '+Math.round((s.quota||0)/1024/1024)+' MB'));return()=>{window.removeEventListener('beforeinstallprompt',before);window.removeEventListener('appinstalled',installed);window.removeEventListener('storage',storage)}},[]);useEffect(()=>{if(!doc.settings.reminder||!unlocked)return;const tick=()=>{if(new Date().toTimeString().slice(0,5)>=doc.settings.reminderTime&&localStorage.getItem('brisa-reminded')!==today()){localStorage.setItem('brisa-reminded',today());setReminderCard(true);void notify()}};const id=setInterval(tick,30000);tick();return()=>clearInterval(id)},[doc.settings.reminder,doc.settings.reminderTime,unlocked]);useEffect(()=>{const guard=(e:BeforeUnloadEvent)=>{if(form||status==='Pendiente de guardar'||status==='Guardando…')e.preventDefault()};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard)},[form,status]);const mutate=(next:Document)=>{const d={...next,revision:uid(),savedAt:new Date().toISOString()};validate(d);ref.current=d;setDoc(d);setStatus('Guardando…');const expected=revision.current;revision.current=d.revision;writeQueue.current=writeQueue.current.then(async()=>{try{await persist(d,expected);setStatus(ref.current.revision===d.revision?'Guardado':'Guardando…');if(fileHandle.current){setLinked('Guardando archivo…');try{const permission=await fileHandle.current.queryPermission({mode:'readwrite'});if(permission!=='granted'){setLinked('Permiso requerido · volver a vincular');return}const w=await fileHandle.current.createWritable();await w.write(JSON.stringify(d));await w.close();setLinked('Archivo guardado: '+fileHandle.current.name)}catch(e){setLinked('Error de archivo: '+(e as Error).message)}}}catch(e){setStatus('Pendiente de guardar');setMessage((e as Error).message);revision.current=expected}})};const exportJSON=(d=ref.current,name='brisa-copia-'+today()+'.json')=>{download(new Blob([JSON.stringify(d,null,2)],{type:'application/json'}),name);const date=new Date().toLocaleString('es-ES');setBackupDate(date);localStorage.setItem('brisa-backup-date',date)};const login=async()=>{const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(password))),b=>b.toString(16).padStart(2,'0')).join('');if(hash!==__PASSWORD_HASH__){setLoginError('La contraseña no es correcta');return}document.cookie='brisa-session='+hash+'; Path=/; SameSite=Lax'+(location.protocol==='https:'?'; Secure':'');setUnlocked(true);setPassword('')};const logout=()=>{setViewer(null);setForm(null);setDetail(null);document.cookie='brisa-session=; Path=/; SameSite=Lax; Max-Age=0';setUnlocked(false)};const notify=async()=>{try{if(!('Notification'in window))throw Error('Este navegador no ofrece notificaciones. El recordatorio aparecerá dentro de Brisa.');if(Notification.permission!=='granted')return;const registration=await navigator.serviceWorker.getRegistration();if(registration)await registration.showNotification('Brisa · Un minuto para tu tranquilidad',{body:'No olvides agregar tus ingresos y gastos',icon:new URL('icon-192.png',location.href).href,badge:new URL('icon-192.png',location.href).href,tag:'brisa-reminder'});else new Notification('No olvides agregar tus ingresos y gastos',{body:'Tu dinero, en orden. Un pequeño hábito cada día.',icon:'./icon-192.png'})}catch(e){setMessage((e as Error).message)}};const enableReminder=async()=>{if('Notification'in window){const permission=await Notification.requestPermission();setMessage(permission==='granted'?'Notificaciones activadas':'Recordatorio dentro de la app; permiso de notificación no concedido')}mutate({...ref.current,settings:{...ref.current.settings,reminder:true}});setReminderCard(true);await notify()};const installApp=async()=>{if(install){await install.prompt();await install.userChoice;setInstall(null)}else setMessage(/iPad|iPhone/.test(navigator.userAgent)?'En Safari: Compartir → Añadir a pantalla de inicio.':'Abre el menú del navegador y busca Instalar aplicación o Añadir a pantalla de inicio. Si no aparece, este navegador no ofrece instalación para esta página.')};const link=async(create=false)=>{try{const api=window as any;const h=create?await api.showSaveFilePicker({suggestedName:'brisa.json',types:[{description:'Documento Brisa',accept:{'application/json':['.json']}}]}):(await api.showOpenFilePicker({types:[{description:'JSON',accept:{'application/json':['.json']}}]}))[0];if(!create){const raw=JSON.parse(await (await h.getFile()).text());const p=previewImport(raw,ref.current);const use=confirm('Aceptar: utilizar el contenido del archivo (abre una previsualización). Cancelar: reemplazar el archivo con tus datos actuales.');if(use){setPreview(p);setReplace(true);setMessage('Confirma la importación antes de escribir en el archivo.');return}exportJSON(ref.current,'brisa-antes-de-vincular.json')}if(await h.requestPermission({mode:'readwrite'})!=='granted')throw Error('Permiso de escritura no concedido');const w=await h.createWritable();await w.write(JSON.stringify(ref.current));await w.close();fileHandle.current=h;setLinked('Archivo guardado: '+h.name)}catch(e){if((e as Error).name!=='AbortError')setMessage((e as Error).message)}};const imported=async(file:File)=>{try{setPreview(previewImport(JSON.parse(await file.text()),ref.current));setReplace(false);setKeepMatches(false)}catch(e){setMessage((e as Error).message)}};const saveTransaction=(t:Transaction)=>{mutate({...ref.current,transactions:[...ref.current.transactions.filter(x=>x.id!==t.id),t]});setForm(null);setDetail(null);setMonth(t.date.slice(0,7));setSelected(t.date)};const period=doc.transactions.filter(t=>t.date.startsWith(month)),sum=totals(period),category=(id:string)=>doc.categories.find(c=>c.id===id)!;const visible=period.filter(t=>normalize(t.note+' '+category(t.categoryId).name).includes(normalize(search)));const days=[...new Set(visible.map(t=>t.date))].sort().reverse();const nav=[['home','Inicio',Home],['calendar','Calendario',CalendarDays],['reports','Informes',ChartNoAxesCombined],['settings','Ajustes',Settings]] as const;const rows=(ts:Transaction[])=>ts.map(t=><button className="transaction" key={t.id} onClick={()=>setDetail(t)}><span className="category-icon" style={{background:category(t.categoryId).color}}>{category(t.categoryId).icon}</span><span className="transaction-note"><b>{t.note||category(t.categoryId).name}</b><small>{category(t.categoryId).name}{t.attachments.length?' · 📎 '+t.attachments.length+' recibos':''}</small></span><strong className={t.type==='income'?'income':''}>{t.type==='income'?'+':'−'}{money(t.amountCents)}</strong><span className="chevron">›</span></button>);if(!unlocked)return <main className="login"><section><img src="./logo.svg" alt="Brisa"/><small>TU DINERO, CON CALMA</small><h1>Bienvenido a Brisa.</h1><p>Un lugar para tus gastos, tus ingresos<br/>y todo lo que quieres tener en orden.</p><form onSubmit={e=>{e.preventDefault();void login()}}><label>Contraseña compartida<input type="password" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" autoFocus/></label><button className="primary">Entrar en mi espacio →</button></form>{loginError&&<p className="error" role="alert">{loginError}</p>}<small>🔒 Datos locales en este dispositivo · Acceso básico</small></section><div className="login-art"><div className="sun"/><div className="art-card"><Wallet size={38}/><p>Pequeños hábitos.<br/><b>Más tranquilidad.</b></p><span>↗ Gastos &nbsp; ↙ Ingresos</span></div></div></main>;return <div className="app"><aside className="sidebar"><a className="brand" href="#" onClick={e=>e.preventDefault()}><img src="./logo.svg" alt=""/><span>brisa<small>GASTOS E INGRESOS</small></span></a><nav>{nav.map(([id,label,Icon])=><button key={id} className={page===id?'active':''} onClick={()=>setPage(id)}><Icon size={21}/>{label}</button>)}</nav><button className="primary desktop-add" onClick={()=>setForm({})}><Plus size={20}/> Nuevo movimiento</button><div className="sidebar-bottom"><div><ShieldCheck size={18}/><span>Tu espacio privado<small>Datos en este dispositivo</small></span></div><button onClick={logout}><LogOut size={18}/> Cerrar sesión</button></div></aside><main className="content"><div className="topbar"><span><i className={status==='Guardado'?'saved':'pending'}/>{status} · {storageMode}</span><div>{offlineReady&&<small>Disponible sin conexión</small>}{!standalone&&<button onClick={installApp}><Download size={16}/> Instalar</button>}<button aria-label="Recordatorio" onClick={()=>setReminderCard(true)}><Bell size={19}/></button></div></div>{message&&<div className="notice" role="status"><span>{message}</span><button onClick={()=>setMessage('')}>✕</button></div>}{needRefresh&&<div className="notice">Nueva versión disponible<button onClick={()=>{if(!form)void updateServiceWorker(true);else setMessage('Guarda o cierra el formulario antes de actualizar.')}}>Actualizar</button></div>}{reminderCard&&<section className="reminder-card"><span className="reminder-icon">✨</span><div><small>UN PEQUEÑO HÁBITO, UNA GRAN TRANQUILIDAD</small><h3>No olvides agregar tus ingresos y gastos</h3><p>Dedica un minuto a poner tu día en orden.</p></div><button className="primary" onClick={()=>{setReminderCard(false);setForm({})}}>Añadir ahora</button><button onClick={()=>setReminderCard(false)}>✕</button></section>}{!ready?<p>Cargando documento…</p>:<>{(page==='home'||page==='calendar')&&<div className="page-title"><div><small>{page==='home'?'TU DÍA A DÍA, EN ORDEN':'CADA DÍA CUENTA'}</small><h1>{page==='home'?'Tu dinero, con perspectiva.':'Calendario'}</h1><p>{page==='home'?'Un vistazo a lo que entra, lo que sale y lo que queda.':'Tus movimientos y presupuestos, día a día.'}</p></div><input aria-label="Mes seleccionado" type="month" value={month} onChange={e=>setMonth(e.target.value)}/></div>}{page==='home'&&<><div className="stats"><section className="card"><span className="stat-icon green"><ArrowDownLeft/></span><small>INGRESOS DEL MES</small><h2 className="income">{money(sum.income)}</h2><p>{period.filter(t=>t.type==='income').length} ingresos registrados</p></section><section className="card"><span className="stat-icon yellow"><ArrowUpRight/></span><small>GASTOS DEL MES</small><h2>{money(sum.expense)}</h2><p>{period.filter(t=>t.type==='expense').length} gastos registrados</p></section><section className="card accent"><span className="stat-icon"><Wallet/></span><small>BALANCE DEL PERIODO</small><h2>{money(sum.balance)}</h2><p>Ingresos menos gastos del mes</p></section></div><div className="home-grid"><section className="card movement-card"><div className="section-title"><h2>Movimientos</h2><label className="search"><Search size={17}/><input aria-label="Buscar movimientos" placeholder="Buscar nota o categoría" value={search} onChange={e=>setSearch(e.target.value)}/></label></div>{days.map(day=><section className="day-group" key={day}><div className="day-header"><b>{dateLabel(day)}</b><small>Gastos {money(totals(visible.filter(t=>t.date===day)).expense)} · Ingresos {money(totals(visible.filter(t=>t.date===day)).income)}</small></div>{rows(visible.filter(t=>t.date===day))}</section>)}{!visible.length&&<div className="empty"><span>🌱</span><h3>Tu siguiente hábito empieza aquí</h3><p>Añade un movimiento o importa tu historial desde Ajustes.</p><button className="primary" onClick={()=>setForm({})}>+ Añadir movimiento</button></div>}</section><aside className="home-side"><section className="card"><small>UN POCO DE CONTEXTO</small><h2>Balance registrado acumulado</h2><h2 className="income">{money(totals(doc.transactions).balance)}</h2><p>Basado en todos los movimientos registrados. No es tu saldo bancario.</p></section><section className="card budget-preview"><span>🎯</span><h2>Haz espacio para tus planes</h2><p>Define un presupuesto y conoce cuánto queda en cada categoría.</p><button onClick={()=>setPage('budgets')}>Ver presupuestos →</button></section><section className="card"><h3>Todo queda contigo.</h3><p>Los recibos y movimientos se guardan aquí. Una copia JSON te permite llevarlos a otro dispositivo.</p><button onClick={()=>exportJSON()}>↓ Descargar copia</button></section></aside></div></>}{page==='calendar'&&<div className="calendar-layout"><section className="card"><div className="calendar-week">{'Lun,Mar,Mié,Jue,Vie,Sáb,Dom'.split(',').map(x=><b key={x}>{x}</b>)}</div><div className="calendar-grid">{Array.from({length:(new Date(month+'-01T12:00:00').getDay()+6)%7},(_,i)=><span key={'empty'+i}/>)}{Array.from({length:new Date(Number(month.slice(0,4)),Number(month.slice(5,7)),0).getDate()},(_,i)=>{const date=month+'-'+String(i+1).padStart(2,'0'),s=totals(period.filter(t=>t.date===date)),b=budget(doc,month),limit=b===undefined?undefined:b/new Date(Number(month.slice(0,4)),Number(month.slice(5,7)),0).getDate();return <button key={date} className={(selected===date?'selected ':'')+(date===today()?'today ':'')+(limit!==undefined&&s.expense>limit?'over':'')} onClick={()=>setSelected(date)}><b>{i+1}</b>{s.income>0&&<small className="income">+{money(s.income)}</small>}{s.expense>0&&<small>−{money(s.expense)}</small>}</button>})}</div><p>{budget(doc,month)===undefined?'Sin presupuesto mensual: no se aplica umbral diario.':'Umbral diario: presupuesto mensual / días del mes. Rojo indica exceso.'}</p></section><section className="card"><h2>{dateLabel(selected)}</h2>{rows(doc.transactions.filter(t=>t.date===selected))}{!doc.transactions.some(t=>t.date===selected)&&<p className="empty">Este día todavía no tiene movimientos.</p>}<button className="primary" onClick={()=>setForm({date:selected})}>+ Añadir en este día</button></section></div>}{page==='reports'&&<Reports doc={doc} onEdit={t=>setDetail(t)} onFavorite={(name,filter:Filter)=>mutate({...ref.current,settings:{...ref.current.settings,favorites:[...ref.current.settings.favorites,{name,filter}]}})}/>} {(page==='budgets'||page==='settings')&&<><div className="page-title"><div><small>TU ESPACIO, A TU MANERA</small><h1>{page==='budgets'?'Presupuestos':'Ajustes'}</h1><p>Todo lo que necesitas para cuidar tus datos.</p></div>{page==='budgets'&&<input aria-label="Mes de presupuesto" type="month" value={month} onChange={e=>setMonth(e.target.value)}/>}</div>{page==='budgets'?<section className="card"><p>Valores por defecto y modificaciones por mes. El global es independiente de las categorías.</p>{[{id:'global',name:'Presupuesto global',icon:'🎯'},...doc.categories.filter(c=>c.type==='expense')].map(c=>{const b=budget(doc,month,c.id),spent=totals(period.filter(t=>c.id==='global'||t.categoryId===c.id)).expense;return <div className="budget-row" key={c.id}><span>{c.icon} {c.name}</span><div><b>{b===undefined?'Sin presupuesto':money(b)}</b><small>Gastado: {money(spent)} · Restante: {b===undefined?'—':money(b-spent)} · Consumido: {b===undefined?'—':b===0?(spent?'Exceso (presupuesto cero)':'0 %'):(spent/b*100).toFixed(1)+' %'}</small><progress max={b||1} value={Math.min(spent,b||1)}/></div><button onClick={()=>{const value=prompt('Presupuesto para '+month+' (vacío elimina modificación)',b===undefined?'':String(b/100).replace('.',','));if(value===null)return;try{const budgets={...ref.current.budgets,[month]:{...ref.current.budgets[month]}};if(value==='')delete budgets[month][c.id];else budgets[month][c.id]=cents(value);mutate({...ref.current,budgets})}catch(e){setMessage((e as Error).message)}}}>Editar mes</button><button onClick={()=>{const value=prompt('Valor por defecto (vacío elimina)',String((doc.budgets.default?.[c.id]||0)/100).replace('.',','));if(value===null)return;try{const b={...doc.budgets,default:{...doc.budgets.default}};if(value==='')delete b.default[c.id];else b.default[c.id]=cents(value);mutate({...ref.current,budgets:b})}catch(e){setMessage((e as Error).message)}}}>Por defecto</button></div>})}</section>:<><div className="settings-grid"><section className="card"><h2>Documento y copias</h2><p>Datos en {storageMode} de este navegador/dispositivo. Borrar los datos del sitio puede eliminarlos. No hay sincronización automática; pestaña y PWA pueden tener almacenes separados.</p><p>{capacity}</p><p>Último guardado: {doc.savedAt?new Date(doc.savedAt).toLocaleString('es-ES'):'Todavía no guardado'}<br/>Última copia descargada: {backupDate||'Ninguna'}</p><div className="toolbar"><label className="button">↑ Importar JSON<input type="file" accept="application/json,.json" hidden onChange={e=>{if(e.target.files?.[0])void imported(e.target.files[0]);e.target.value=''}}/></label><button onClick={()=>exportJSON()}>↓ Descargar copia JSON</button><button onClick={async()=>{const previous=await previousDocument();if(previous)exportJSON(previous,'brisa-version-anterior.json');else setMessage('No hay copia anterior disponible.')}}>Descargar versión anterior</button><button onClick={async()=>{const ok=await navigator.storage?.persist?.();setMessage(ok?'Almacenamiento persistente concedido. Conserva copias igualmente.':'No se ha concedido almacenamiento persistente; conserva copias JSON.')}}>Solicitar almacenamiento persistente</button><button onClick={()=>setPage('budgets')}>Presupuestos →</button></div></section><section className="card"><h2>Archivo externo vinculado</h2><p>{linked}</p><p>Además de la copia local. Vuelve a seleccionarlo después de cerrar el navegador.</p>{'showOpenFilePicker'in window?<div className="toolbar"><button onClick={()=>void link()}>Vincular existente</button><button onClick={()=>void link(true)}>Crear archivo</button><button onClick={()=>{fileHandle.current=null;setLinked('Sin archivo vinculado')}}>Desvincular</button></div>:<p>Este navegador no ofrece File System Access. Utiliza importar y descargar copias.</p>}</section><section className="card"><h2>Tu recordatorio diario</h2><div className="notification-preview"><img src="./logo.svg" alt=""/><div><small>BRISA · AHORA</small><b>No olvides agregar tus ingresos y gastos</b><p>Un minuto para tu tranquilidad. ✨</p></div></div><label>Hora local<input type="time" value={doc.settings.reminderTime} onChange={e=>mutate({...ref.current,settings:{...ref.current.settings,reminderTime:e.target.value}})}/></label><div className="toolbar"><button onClick={()=>void enableReminder()}>Activar recordatorio</button><button onClick={()=>{setReminderCard(true);void notify()}}>Probar notificación</button><button onClick={()=>mutate({...ref.current,settings:{...ref.current.settings,reminder:false}})}>Desactivar</button></div><p>{doc.settings.reminder?'Activado':'Desactivado'}. Sin servidor, el recordatorio se comprueba mientras Brisa está abierta. No puede enviar push remoto con la aplicación cerrada. La apariencia de la notificación del sistema depende del dispositivo.</p></section><section className="card"><h2>Instalación y recibos</h2><p>{standalone?'Ejecutándose como aplicación instalada':'Ejecutándose en una pestaña'}</p>{!standalone&&<button onClick={()=>void installApp()}>Instalar / instrucciones</button>}<label>Límite por archivo (MB)<input type="number" min="1" max="100" value={doc.settings.maxFileMB} onChange={e=>{const n=Number(e.target.value);if(n>=1&&n<=100)mutate({...ref.current,settings:{...ref.current.settings,maxFileMB:n}})}}/></label><p>No se comprimen recibos. localStorage permite documentos de hasta 4 MB con esta configuración, incluidos adjuntos; OPFS depende de la cuota disponible.</p><p>Acceso frontend básico: no cifra datos. La contraseña se cambia en CONTRASENA.txt y requiere recompilar. La cookie es de sesión y depende del navegador.</p></section></div><section className="card"><div className="section-title"><h2>Categorías</h2><button onClick={()=>{const name=prompt('Nombre de la categoría');if(!name)return;const type=confirm('Aceptar: gasto. Cancelar: ingreso.')?'expense':'income';mutate({...ref.current,categories:[...ref.current.categories,{id:uid(),name,type,icon:'✨',color:'#ead4bc'}]})}}>+ Crear</button></div>{doc.categories.map((c,i)=><div className="category-row" key={c.id}><span className="category-icon" style={{background:c.color}}>{c.icon}</span><b>{c.name}<small>{c.type==='expense'?'Gasto':'Ingreso'}{c.archived?' · Archivada':''}</small></b><button onClick={()=>{const name=prompt('Nombre',c.name);if(name)mutate({...ref.current,categories:doc.categories.map(x=>x.id===c.id?{...x,name}:x)})}}>Renombrar</button><button onClick={()=>{const icon=prompt('Icono (emoji)',c.icon);if(icon)mutate({...ref.current,categories:doc.categories.map(x=>x.id===c.id?{...x,icon}:x)})}}>Icono</button><input aria-label={'Color '+c.name} type="color" value={c.color} onChange={e=>mutate({...ref.current,categories:doc.categories.map(x=>x.id===c.id?{...x,color:e.target.value}:x)})}/><button disabled={!i} onClick={()=>{const cs=[...doc.categories];[cs[i-1],cs[i]]=[cs[i],cs[i-1]];mutate({...ref.current,categories:cs})}}>↑</button><button onClick={()=>mutate({...ref.current,categories:doc.categories.map(x=>x.id===c.id?{...x,archived:!x.archived}:x)})}>{c.archived?'Activar':'Archivar'}</button><button onClick={()=>{if(doc.transactions.some(t=>t.categoryId===c.id)){setMessage('Esta categoría tiene movimientos. Archívala para conservar el histórico.');return}if(confirm('¿Eliminar '+c.name+'?'))mutate({...ref.current,categories:doc.categories.filter(x=>x.id!==c.id)})}}>Eliminar</button></div>)}</section></>}</>}</>}</main><nav className="mobile-nav">{nav.map(([id,label,Icon])=><button className={page===id?'active':''} key={id} onClick={()=>setPage(id)}><Icon size={22}/><small>{label}</small></button>)}</nav><button className="fab" aria-label="Añadir movimiento" onClick={()=>setForm({})}><Plus size={28}/></button>{form&&<TransactionForm doc={doc} initial={form.initial} date={form.date} onSave={saveTransaction} onClose={()=>setForm(null)} onView={(items,index)=>setViewer({items,index})}/>} {detail&&!form&&<div className="overlay"><section className="modal detail"><header><h2>{category(detail.categoryId).icon} {detail.note||category(detail.categoryId).name}</h2><button onClick={()=>setDetail(null)}>✕</button></header><h1>{detail.type==='income'?'+':'−'}{money(detail.amountCents)}</h1><p>{dateLabel(detail.date)} · {category(detail.categoryId).name}</p>{detail.calculationExpression&&<p>Cálculo: {detail.calculationExpression}</p>}{detail.attachments.map((a,i)=><button className="attachment" key={a.id} onClick={()=>setViewer({items:detail.attachments,index:i})}>{a.mime==='application/pdf'?'📄':'🖼️'} {a.name} · {(a.size/1024).toFixed(1)} KB · Abrir →</button>)}<footer><button onClick={()=>setForm({initial:detail})}>Editar</button><button onClick={()=>{const include=detail.attachments.length?confirm('¿Incluir los recibos en la copia?'):false;setForm({initial:{...detail,id:uid(),date:today(),source:undefined,attachments:include?detail.attachments.map(a=>({...a,id:uid()})):[]}})}}>Duplicar</button><button className="danger" onClick={()=>{if(confirm('¿Eliminar el movimiento y sus recibos?')){mutate({...ref.current,transactions:doc.transactions.filter(t=>t.id!==detail.id)});setDetail(null)}}}>Eliminar</button></footer></section></div>}{preview&&<div className="overlay"><section className="modal"><header><h2>Revisar importación</h2><button onClick={()=>setPreview(null)}>✕</button></header><p>{preview.own?'Documento Brisa':'Money Manager'} · {preview.doc.transactions.length} válidos · {preview.invalid.length} inválidos · {preview.excluded} excluidos</p><p>Gastos {money(importSummary(preview).expense)} · Ingresos {money(importSummary(preview).income)} · Balance {money(importSummary(preview).balance)}</p><p>Fechas: {[...preview.doc.transactions.map(t=>t.date)].sort()[0]||'—'} → {[...preview.doc.transactions.map(t=>t.date)].sort().at(-1)||'—'}</p><p>{preview.duplicates} coincidencias · {preview.conflicts} conflictos. Al combinar se conservan los movimientos existentes con el mismo ID.</p><p>Adjuntos: {preview.doc.transactions.reduce((a,t)=>a+t.attachments.length,0)}</p><details><summary>Categorías detectadas</summary>{preview.doc.categories.filter(c=>preview.doc.transactions.some(t=>t.categoryId===c.id)).map(c=>c.name).join(' · ')}</details>{[...preview.invalid,...preview.warnings].map((s,i)=><p className="error" key={i}>{s}</p>)}<label><input type="checkbox" checked={replace} onChange={e=>setReplace(e.target.checked)}/> Reemplazar documento actual (se descarga una copia recuperable)</label>{!preview.own&&!replace&&<label><input type="checkbox" checked={keepMatches} onChange={e=>setKeepMatches(e.target.checked)}/> Incorporar también las coincidencias con el historial</label>}<footer><button onClick={()=>setPreview(null)}>Cancelar</button><button className="primary" onClick={()=>{try{if(replace){exportJSON(ref.current,'brisa-antes-de-importar.json');mutate(preview.doc)}else mutate(mergeImport(ref.current,preview,keepMatches));setPreview(null)}catch(e){setMessage((e as Error).message)}}}>Confirmar importación</button></footer></section></div>}{viewer&&<ReceiptViewer {...viewer} onClose={()=>setViewer(null)}/>}</div>}
+import { useEffect, useRef, useState } from "react";
+import {
+  Home,
+  CalendarDays,
+  ChartNoAxesCombined,
+  Settings,
+  Plus,
+  ArrowUpRight,
+  ArrowDownLeft,
+  Wallet,
+  Search,
+  LogOut,
+  Download,
+  Bell,
+  ShieldCheck,
+} from "lucide-react";
+import { useRegisterSW } from "virtual:pwa-register/react";
+import {
+  emptyDocument,
+  today,
+  uid,
+  money,
+  totals,
+  normalize,
+  cents,
+  budget,
+  download,
+  validate,
+  type Document,
+  type Transaction,
+  type Attachment,
+  type Filter,
+} from "./model";
+import {
+  loadDocument,
+  persist,
+  storageMode,
+  previousDocument,
+} from "./storage";
+import {
+  previewImport,
+  mergeImport,
+  importSummary,
+  type Preview,
+} from "./importer";
+import TransactionForm from "./TransactionForm";
+import ReceiptViewer from "./ReceiptViewer";
+import Reports from "./Reports";
+declare const __PASSWORD_HASH__: string;
+const session = () =>
+  document.cookie
+    .split(";")
+    .some((c) => c.trim() === "brisa-session=" + __PASSWORD_HASH__);
+const dateLabel = (s: string) =>
+  new Date(s + "T12:00:00").toLocaleDateString("es-ES", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
+export default function App() {
+  const [unlocked, setUnlocked] = useState(session),
+    [password, setPassword] = useState(""),
+    [loginError, setLoginError] = useState(""),
+    [doc, setDoc] = useState<Document>(emptyDocument),
+    [ready, setReady] = useState(false),
+    [page, setPage] = useState("home"),
+    [month, setMonth] = useState(today().slice(0, 7)),
+    [search, setSearch] = useState(""),
+    [status, setStatus] = useState("Cargando…"),
+    [message, setMessage] = useState(""),
+    [form, setForm] = useState<{ initial?: Transaction; date?: string } | null>(
+      null,
+    ),
+    [detail, setDetail] = useState<Transaction | null>(null),
+    [viewer, setViewer] = useState<{
+      items: Attachment[];
+      index: number;
+    } | null>(null),
+    [selected, setSelected] = useState(today()),
+    [preview, setPreview] = useState<Preview | null>(null),
+    [replace, setReplace] = useState(false),
+    [keepMatches, setKeepMatches] = useState(false),
+    [install, setInstall] = useState<any>(null),
+    [standalone, setStandalone] = useState(
+      matchMedia("(display-mode: standalone)").matches ||
+        (navigator as any).standalone === true,
+    ),
+    [linked, setLinked] = useState("Sin archivo vinculado"),
+    [capacity, setCapacity] = useState(""),
+    [backupDate, setBackupDate] = useState(
+      localStorage.getItem("brisa-backup-date") || "",
+    ),
+    [reminderCard, setReminderCard] = useState(false);
+  const pendingLink = useRef<any>(null);
+  const ref = useRef(doc),
+    revision = useRef(""),
+    fileHandle = useRef<any>(null),
+    writeQueue = useRef<Promise<any>>(Promise.resolve());
+  const {
+    needRefresh: [needRefresh],
+    offlineReady: [offlineReady],
+    updateServiceWorker,
+  } = useRegisterSW();
+  useEffect(() => {
+    loadDocument()
+      .then(({ doc, recovered }) => {
+        setDoc(doc);
+        ref.current = doc;
+        revision.current = doc.revision;
+        setReady(true);
+        setStatus(
+          recovered ? "Recuperado desde copia anterior" : "Datos cargados",
+        );
+      })
+      .catch((e) => setMessage(e.message));
+    const before = (e: Event) => {
+        e.preventDefault();
+        setInstall(e);
+      },
+      installed = () => {
+        setStandalone(true);
+        setInstall(null);
+      };
+    window.addEventListener("beforeinstallprompt", before);
+    window.addEventListener("appinstalled", installed);
+    const storage = (e: StorageEvent) => {
+      if (e.key === "brisa-revision" && e.newValue !== revision.current)
+        setMessage(
+          "Hay cambios en otra pestaña. Descarga tus cambios y recarga para evitar conflictos.",
+        );
+    };
+    window.addEventListener("storage", storage);
+    navigator.storage
+      ?.estimate()
+      .then((s) =>
+        setCapacity(
+          "Uso aproximado " +
+            Math.round((s.usage || 0) / 1024 / 1024) +
+            " MB / " +
+            Math.round((s.quota || 0) / 1024 / 1024) +
+            " MB",
+        ),
+      );
+    return () => {
+      window.removeEventListener("beforeinstallprompt", before);
+      window.removeEventListener("appinstalled", installed);
+      window.removeEventListener("storage", storage);
+    };
+  }, []);
+  useEffect(() => {
+    if (!doc.settings.reminder || !unlocked) return;
+    const tick = () => {
+      if (
+        new Date().toTimeString().slice(0, 5) >= doc.settings.reminderTime &&
+        localStorage.getItem("brisa-reminded") !== today()
+      ) {
+        localStorage.setItem("brisa-reminded", today());
+        setReminderCard(true);
+        void notify();
+      }
+    };
+    const id = setInterval(tick, 30000);
+    tick();
+    return () => clearInterval(id);
+  }, [doc.settings.reminder, doc.settings.reminderTime, unlocked]);
+  useEffect(() => {
+    const guard = (e: BeforeUnloadEvent) => {
+      if (form || status === "Pendiente de guardar" || status === "Guardando…")
+        e.preventDefault();
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, [form, status]);
+  const mutate = (next: Document) => {
+    const d = { ...next, revision: uid(), savedAt: new Date().toISOString() };
+    validate(d);
+    ref.current = d;
+    setDoc(d);
+    setStatus("Guardando…");
+    writeQueue.current = writeQueue.current.then(async () => {
+      try {
+        await persist(d, revision.current);
+        revision.current = d.revision;
+        setStatus(
+          ref.current.revision === d.revision ? "Guardado" : "Guardando…",
+        );
+        if (fileHandle.current) {
+          setLinked("Guardando archivo…");
+          try {
+            const permission = await fileHandle.current.queryPermission({
+              mode: "readwrite",
+            });
+            if (permission !== "granted") {
+              setLinked("Permiso requerido · volver a vincular");
+              return;
+            }
+            const w = await fileHandle.current.createWritable();
+            await w.write(JSON.stringify(d));
+            await w.close();
+            setLinked("Archivo guardado: " + fileHandle.current.name);
+          } catch (e) {
+            setLinked("Error de archivo: " + (e as Error).message);
+          }
+        }
+      } catch (e) {
+        setStatus("Pendiente de guardar");
+        setMessage((e as Error).message);
+      }
+    });
+  };
+  const exportJSON = (
+    d = ref.current,
+    name = "brisa-copia-" + today() + ".json",
+  ) => {
+    download(
+      new Blob([JSON.stringify(d, null, 2)], { type: "application/json" }),
+      name,
+    );
+    const date = new Date().toLocaleString("es-ES");
+    setBackupDate(date);
+    localStorage.setItem("brisa-backup-date", date);
+  };
+  const login = async () => {
+    const hash = Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(password),
+        ),
+      ),
+      (b) => b.toString(16).padStart(2, "0"),
+    ).join("");
+    if (hash !== __PASSWORD_HASH__) {
+      setLoginError("La contraseña no es correcta");
+      return;
+    }
+    document.cookie =
+      "brisa-session=" +
+      hash +
+      "; Path=/; SameSite=Lax" +
+      (location.protocol === "https:" ? "; Secure" : "");
+    setUnlocked(true);
+    setPassword("");
+  };
+  const logout = () => {
+    setViewer(null);
+    setForm(null);
+    setDetail(null);
+    document.cookie = "brisa-session=; Path=/; SameSite=Lax; Max-Age=0";
+    setUnlocked(false);
+  };
+  const notify = async () => {
+    try {
+      if (!("Notification" in window))
+        throw Error(
+          "Este navegador no ofrece notificaciones. El recordatorio aparecerá dentro de Brisa.",
+        );
+      if (Notification.permission !== "granted") return;
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (registration)
+        await registration.showNotification(
+          "Brisa · Un minuto para tu tranquilidad",
+          {
+            body: "No olvides agregar tus ingresos y gastos",
+            icon: new URL("icon-192.png", location.href).href,
+            badge: new URL("icon-192.png", location.href).href,
+            tag: "brisa-reminder",
+          },
+        );
+      else
+        new Notification("No olvides agregar tus ingresos y gastos", {
+          body: "Tu dinero, en orden. Un pequeño hábito cada día.",
+          icon: "./icon-192.png",
+        });
+    } catch (e) {
+      setMessage((e as Error).message);
+    }
+  };
+  const enableReminder = async () => {
+    if ("Notification" in window) {
+      const permission = await Notification.requestPermission();
+      setMessage(
+        permission === "granted"
+          ? "Notificaciones activadas"
+          : "Recordatorio dentro de la app; permiso de notificación no concedido",
+      );
+    }
+    mutate({
+      ...ref.current,
+      settings: { ...ref.current.settings, reminder: true },
+    });
+    setReminderCard(true);
+    await notify();
+  };
+  const installApp = async () => {
+    if (install) {
+      await install.prompt();
+      await install.userChoice;
+      setInstall(null);
+    } else
+      setMessage(
+        /iPad|iPhone/.test(navigator.userAgent)
+          ? "En Safari: Compartir → Añadir a pantalla de inicio."
+          : "Abre el menú del navegador y busca Instalar aplicación o Añadir a pantalla de inicio. Si no aparece, este navegador no ofrece instalación para esta página.",
+      );
+  };
+  const link = async (create = false) => {
+    try {
+      const api = window as any;
+      const h = create
+        ? await api.showSaveFilePicker({
+            suggestedName: "brisa.json",
+            types: [
+              {
+                description: "Documento Brisa",
+                accept: { "application/json": [".json"] },
+              },
+            ],
+          })
+        : (
+            await api.showOpenFilePicker({
+              types: [
+                {
+                  description: "JSON",
+                  accept: { "application/json": [".json"] },
+                },
+              ],
+            })
+          )[0];
+      if (!create) {
+        const raw = JSON.parse(await (await h.getFile()).text());
+        const p = previewImport(raw, ref.current);
+        const use = confirm(
+          "Aceptar: utilizar el contenido del archivo (abre una previsualización). Cancelar: reemplazar el archivo con tus datos actuales.",
+        );
+        if (use) {
+          if ((await h.requestPermission({ mode: "readwrite" })) !== "granted")
+            throw Error("Permiso de escritura no concedido");
+          pendingLink.current = h;
+          setPreview(p);
+          setReplace(true);
+          setMessage(
+            "Confirma la importación antes de escribir en el archivo.",
+          );
+          return;
+        }
+        exportJSON(ref.current, "brisa-antes-de-vincular.json");
+      }
+      if ((await h.requestPermission({ mode: "readwrite" })) !== "granted")
+        throw Error("Permiso de escritura no concedido");
+      const w = await h.createWritable();
+      await w.write(JSON.stringify(ref.current));
+      await w.close();
+      fileHandle.current = h;
+      setLinked("Archivo guardado: " + h.name);
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") setMessage((e as Error).message);
+    }
+  };
+  const imported = async (file: File) => {
+    try {
+      setPreview(previewImport(JSON.parse(await file.text()), ref.current));
+      setReplace(false);
+      setKeepMatches(false);
+    } catch (e) {
+      setMessage((e as Error).message);
+    }
+  };
+  const saveTransaction = (t: Transaction) => {
+    mutate({
+      ...ref.current,
+      transactions: [
+        ...ref.current.transactions.filter((x) => x.id !== t.id),
+        t,
+      ],
+    });
+    setForm(null);
+    setDetail(null);
+    setMonth(t.date.slice(0, 7));
+    setSelected(t.date);
+  };
+  const period = doc.transactions.filter((t) => t.date.startsWith(month)),
+    sum = totals(period),
+    category = (id: string) => doc.categories.find((c) => c.id === id)!;
+  const visible = period.filter((t) =>
+    normalize(t.note + " " + category(t.categoryId).name).includes(
+      normalize(search),
+    ),
+  );
+  const days = [...new Set(visible.map((t) => t.date))].sort().reverse();
+  const nav = [
+    ["home", "Inicio", Home],
+    ["calendar", "Calendario", CalendarDays],
+    ["reports", "Informes", ChartNoAxesCombined],
+    ["settings", "Ajustes", Settings],
+  ] as const;
+  const rows = (ts: Transaction[]) =>
+    ts.map((t) => (
+      <button className="transaction" key={t.id} onClick={() => setDetail(t)}>
+        <span
+          className="category-icon"
+          style={{ background: category(t.categoryId).color }}
+        >
+          {category(t.categoryId).icon}
+        </span>
+        <span className="transaction-note">
+          <b>{t.note || category(t.categoryId).name}</b>
+          <small>
+            {category(t.categoryId).name}
+            {t.attachments.length
+              ? " · 📎 " + t.attachments.length + " recibos"
+              : ""}
+          </small>
+        </span>
+        <strong className={t.type === "income" ? "income" : ""}>
+          {t.type === "income" ? "+" : "−"}
+          {money(t.amountCents)}
+        </strong>
+        <span className="chevron">›</span>
+      </button>
+    ));
+  if (!unlocked)
+    return (
+      <main className="login">
+        <section>
+          <img src="./logo.svg" alt="Brisa" />
+          <small>TU DINERO, CON CALMA</small>
+          <h1>Bienvenido a Brisa.</h1>
+          <p>
+            Un lugar para tus gastos, tus ingresos
+            <br />y todo lo que quieres tener en orden.
+          </p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void login();
+            }}
+          >
+            <label>
+              Contraseña compartida
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                autoFocus
+              />
+            </label>
+            <button className="primary">Entrar en mi espacio →</button>
+          </form>
+          {loginError && (
+            <p className="error" role="alert">
+              {loginError}
+            </p>
+          )}
+          <small>🔒 Datos locales en este dispositivo · Acceso básico</small>
+        </section>
+        <div className="login-art">
+          <div className="sun" />
+          <div className="art-card">
+            <Wallet size={38} />
+            <p>
+              Pequeños hábitos.
+              <br />
+              <b>Más tranquilidad.</b>
+            </p>
+            <span>↗ Gastos &nbsp; ↙ Ingresos</span>
+          </div>
+        </div>
+      </main>
+    );
+  return (
+    <div className="app">
+      <aside className="sidebar">
+        <a className="brand" href="#" onClick={(e) => e.preventDefault()}>
+          <img src="./logo.svg" alt="" />
+          <span>
+            brisa<small>GASTOS E INGRESOS</small>
+          </span>
+        </a>
+        <nav>
+          {nav.map(([id, label, Icon]) => (
+            <button
+              key={id}
+              className={page === id ? "active" : ""}
+              onClick={() => setPage(id)}
+            >
+              <Icon size={21} />
+              {label}
+            </button>
+          ))}
+        </nav>
+        <button className="primary desktop-add" onClick={() => setForm({})}>
+          <Plus size={20} /> Nuevo movimiento
+        </button>
+        <div className="sidebar-bottom">
+          <div>
+            <ShieldCheck size={18} />
+            <span>
+              Tu espacio privado<small>Datos en este dispositivo</small>
+            </span>
+          </div>
+          <button onClick={logout}>
+            <LogOut size={18} /> Cerrar sesión
+          </button>
+        </div>
+      </aside>
+      <main className="content">
+        <div className="topbar">
+          {status === "Pendiente de guardar" && (
+            <button onClick={() => mutate(ref.current)}>
+              Reintentar guardado
+            </button>
+          )}
+          <span>
+            <i className={status === "Guardado" ? "saved" : "pending"} />
+            {status} · {storageMode}
+          </span>
+          <div>
+            {offlineReady && <small>Disponible sin conexión</small>}
+            {!standalone && (
+              <button onClick={installApp}>
+                <Download size={16} /> Instalar
+              </button>
+            )}
+            <button
+              aria-label="Recordatorio"
+              onClick={() => setReminderCard(true)}
+            >
+              <Bell size={19} />
+            </button>
+          </div>
+        </div>
+        {message && (
+          <div className="notice" role="status">
+            <span>{message}</span>
+            <button onClick={() => setMessage("")}>✕</button>
+          </div>
+        )}
+        {needRefresh && (
+          <div className="notice">
+            Nueva versión disponible
+            <button
+              onClick={() => {
+                if (!form) void updateServiceWorker(true);
+                else
+                  setMessage(
+                    "Guarda o cierra el formulario antes de actualizar.",
+                  );
+              }}
+            >
+              Actualizar
+            </button>
+          </div>
+        )}
+        {reminderCard && (
+          <section className="reminder-card">
+            <span className="reminder-icon">✨</span>
+            <div>
+              <small>UN PEQUEÑO HÁBITO, UNA GRAN TRANQUILIDAD</small>
+              <h3>No olvides agregar tus ingresos y gastos</h3>
+              <p>Dedica un minuto a poner tu día en orden.</p>
+            </div>
+            <button
+              className="primary"
+              onClick={() => {
+                setReminderCard(false);
+                setForm({});
+              }}
+            >
+              Añadir ahora
+            </button>
+            <button onClick={() => setReminderCard(false)}>✕</button>
+          </section>
+        )}
+        {!ready ? (
+          <p>Cargando documento…</p>
+        ) : (
+          <>
+            {(page === "home" || page === "calendar") && (
+              <div className="page-title">
+                <div>
+                  <small>
+                    {page === "home"
+                      ? "TU DÍA A DÍA, EN ORDEN"
+                      : "CADA DÍA CUENTA"}
+                  </small>
+                  <h1>
+                    {page === "home"
+                      ? "Tu dinero, con perspectiva."
+                      : "Calendario"}
+                  </h1>
+                  <p>
+                    {page === "home"
+                      ? "Un vistazo a lo que entra, lo que sale y lo que queda."
+                      : "Tus movimientos y presupuestos, día a día."}
+                  </p>
+                </div>
+                <input
+                  aria-label="Mes seleccionado"
+                  type="month"
+                  value={month}
+                  onChange={(e) => setMonth(e.target.value)}
+                />
+              </div>
+            )}
+            {page === "home" && (
+              <>
+                <div className="stats">
+                  <section className="card">
+                    <span className="stat-icon green">
+                      <ArrowDownLeft />
+                    </span>
+                    <small>INGRESOS DEL MES</small>
+                    <h2 className="income">{money(sum.income)}</h2>
+                    <p>
+                      {period.filter((t) => t.type === "income").length}{" "}
+                      ingresos registrados
+                    </p>
+                  </section>
+                  <section className="card">
+                    <span className="stat-icon yellow">
+                      <ArrowUpRight />
+                    </span>
+                    <small>GASTOS DEL MES</small>
+                    <h2>{money(sum.expense)}</h2>
+                    <p>
+                      {period.filter((t) => t.type === "expense").length} gastos
+                      registrados
+                    </p>
+                  </section>
+                  <section className="card accent">
+                    <span className="stat-icon">
+                      <Wallet />
+                    </span>
+                    <small>BALANCE DEL PERIODO</small>
+                    <h2>{money(sum.balance)}</h2>
+                    <p>Ingresos menos gastos del mes</p>
+                  </section>
+                </div>
+                <div className="home-grid">
+                  <section className="card movement-card">
+                    <div className="section-title">
+                      <h2>Movimientos</h2>
+                      <label className="search">
+                        <Search size={17} />
+                        <input
+                          aria-label="Buscar movimientos"
+                          placeholder="Buscar nota o categoría"
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    {days.map((day) => (
+                      <section className="day-group" key={day}>
+                        <div className="day-header">
+                          <b>{dateLabel(day)}</b>
+                          <small>
+                            Gastos{" "}
+                            {money(
+                              totals(visible.filter((t) => t.date === day))
+                                .expense,
+                            )}{" "}
+                            · Ingresos{" "}
+                            {money(
+                              totals(visible.filter((t) => t.date === day))
+                                .income,
+                            )}
+                          </small>
+                        </div>
+                        {rows(visible.filter((t) => t.date === day))}
+                      </section>
+                    ))}
+                    {!visible.length && (
+                      <div className="empty">
+                        <span>🌱</span>
+                        <h3>Tu siguiente hábito empieza aquí</h3>
+                        <p>
+                          Añade un movimiento o importa tu historial desde
+                          Ajustes.
+                        </p>
+                        <button className="primary" onClick={() => setForm({})}>
+                          + Añadir movimiento
+                        </button>
+                      </div>
+                    )}
+                  </section>
+                  <aside className="home-side">
+                    <section className="card">
+                      <small>UN POCO DE CONTEXTO</small>
+                      <h2>Balance registrado acumulado</h2>
+                      <h2 className="income">
+                        {money(totals(doc.transactions).balance)}
+                      </h2>
+                      <p>
+                        Basado en todos los movimientos registrados. No es tu
+                        saldo bancario.
+                      </p>
+                    </section>
+                    <section className="card budget-preview">
+                      <span>🎯</span>
+                      <h2>Haz espacio para tus planes</h2>
+                      <p>
+                        Define un presupuesto y conoce cuánto queda en cada
+                        categoría.
+                      </p>
+                      <button onClick={() => setPage("budgets")}>
+                        Ver presupuestos →
+                      </button>
+                    </section>
+                    <section className="card">
+                      <h3>Todo queda contigo.</h3>
+                      <p>
+                        Los recibos y movimientos se guardan aquí. Una copia
+                        JSON te permite llevarlos a otro dispositivo.
+                      </p>
+                      <button onClick={() => exportJSON()}>
+                        ↓ Descargar copia
+                      </button>
+                    </section>
+                  </aside>
+                </div>
+              </>
+            )}
+            {page === "calendar" && (
+              <div className="calendar-layout">
+                <section className="card">
+                  <div className="calendar-week">
+                    {"Lun,Mar,Mié,Jue,Vie,Sáb,Dom".split(",").map((x) => (
+                      <b key={x}>{x}</b>
+                    ))}
+                  </div>
+                  <div className="calendar-grid">
+                    {Array.from(
+                      {
+                        length:
+                          (new Date(month + "-01T12:00:00").getDay() + 6) % 7,
+                      },
+                      (_, i) => (
+                        <span key={"empty" + i} />
+                      ),
+                    )}
+                    {Array.from(
+                      {
+                        length: new Date(
+                          Number(month.slice(0, 4)),
+                          Number(month.slice(5, 7)),
+                          0,
+                        ).getDate(),
+                      },
+                      (_, i) => {
+                        const date =
+                            month + "-" + String(i + 1).padStart(2, "0"),
+                          s = totals(period.filter((t) => t.date === date)),
+                          b = budget(doc, month),
+                          limit =
+                            b === undefined
+                              ? undefined
+                              : b /
+                                new Date(
+                                  Number(month.slice(0, 4)),
+                                  Number(month.slice(5, 7)),
+                                  0,
+                                ).getDate();
+                        return (
+                          <button
+                            key={date}
+                            className={
+                              (selected === date ? "selected " : "") +
+                              (date === today() ? "today " : "") +
+                              (limit !== undefined && s.expense > limit
+                                ? "over"
+                                : "")
+                            }
+                            onClick={() => setSelected(date)}
+                          >
+                            <b>{i + 1}</b>
+                            {s.income > 0 && (
+                              <small className="income">
+                                +{money(s.income)}
+                              </small>
+                            )}
+                            {s.expense > 0 && (
+                              <small>−{money(s.expense)}</small>
+                            )}
+                          </button>
+                        );
+                      },
+                    )}
+                  </div>
+                  <p>
+                    {budget(doc, month) === undefined
+                      ? "Sin presupuesto mensual: no se aplica umbral diario."
+                      : "Umbral diario: presupuesto mensual / días del mes. Rojo indica exceso."}
+                  </p>
+                </section>
+                <section className="card">
+                  <h2>{dateLabel(selected)}</h2>
+                  {rows(doc.transactions.filter((t) => t.date === selected))}
+                  {!doc.transactions.some((t) => t.date === selected) && (
+                    <p className="empty">
+                      Este día todavía no tiene movimientos.
+                    </p>
+                  )}
+                  <button
+                    className="primary"
+                    onClick={() => setForm({ date: selected })}
+                  >
+                    + Añadir en este día
+                  </button>
+                </section>
+              </div>
+            )}
+            {page === "reports" && (
+              <Reports
+                doc={doc}
+                onEdit={(t) => setDetail(t)}
+                onFavorite={(name, filter: Filter) =>
+                  mutate({
+                    ...ref.current,
+                    settings: {
+                      ...ref.current.settings,
+                      favorites: [
+                        ...ref.current.settings.favorites,
+                        { name, filter },
+                      ],
+                    },
+                  })
+                }
+              />
+            )}{" "}
+            {(page === "budgets" || page === "settings") && (
+              <>
+                <div className="page-title">
+                  <div>
+                    <small>TU ESPACIO, A TU MANERA</small>
+                    <h1>{page === "budgets" ? "Presupuestos" : "Ajustes"}</h1>
+                    <p>Todo lo que necesitas para cuidar tus datos.</p>
+                  </div>
+                  {page === "budgets" && (
+                    <input
+                      aria-label="Mes de presupuesto"
+                      type="month"
+                      value={month}
+                      onChange={(e) => setMonth(e.target.value)}
+                    />
+                  )}
+                </div>
+                {page === "budgets" ? (
+                  <section className="card">
+                    <p>
+                      Valores por defecto y modificaciones por mes. El global es
+                      independiente de las categorías.
+                    </p>
+                    {[
+                      { id: "global", name: "Presupuesto global", icon: "🎯" },
+                      ...doc.categories.filter((c) => c.type === "expense"),
+                    ].map((c) => {
+                      const b = budget(doc, month, c.id),
+                        spent = totals(
+                          period.filter(
+                            (t) => c.id === "global" || t.categoryId === c.id,
+                          ),
+                        ).expense;
+                      return (
+                        <div className="budget-row" key={c.id}>
+                          <span>
+                            {c.icon} {c.name}
+                          </span>
+                          <div>
+                            <b>
+                              {b === undefined ? "Sin presupuesto" : money(b)}
+                            </b>
+                            <small>
+                              Gastado: {money(spent)} · Restante:{" "}
+                              {b === undefined ? "—" : money(b - spent)} ·
+                              Consumido:{" "}
+                              {b === undefined
+                                ? "—"
+                                : b === 0
+                                  ? spent
+                                    ? "Exceso (presupuesto cero)"
+                                    : "0 %"
+                                  : ((spent / b) * 100).toFixed(1) + " %"}
+                            </small>
+                            <progress
+                              max={b || 1}
+                              value={Math.min(spent, b || 1)}
+                            />
+                          </div>
+                          <button
+                            onClick={() => {
+                              const value = prompt(
+                                "Presupuesto para " +
+                                  month +
+                                  " (vacío elimina modificación)",
+                                b === undefined
+                                  ? ""
+                                  : String(b / 100).replace(".", ","),
+                              );
+                              if (value === null) return;
+                              try {
+                                const budgets = {
+                                  ...ref.current.budgets,
+                                  [month]: { ...ref.current.budgets[month] },
+                                };
+                                if (value === "") delete budgets[month][c.id];
+                                else budgets[month][c.id] = cents(value);
+                                mutate({ ...ref.current, budgets });
+                              } catch (e) {
+                                setMessage((e as Error).message);
+                              }
+                            }}
+                          >
+                            Editar mes
+                          </button>
+                          <button
+                            onClick={() => {
+                              const value = prompt(
+                                "Valor por defecto (vacío elimina)",
+                                String(
+                                  (doc.budgets.default?.[c.id] || 0) / 100,
+                                ).replace(".", ","),
+                              );
+                              if (value === null) return;
+                              try {
+                                const b = {
+                                  ...doc.budgets,
+                                  default: { ...doc.budgets.default },
+                                };
+                                if (value === "") delete b.default[c.id];
+                                else b.default[c.id] = cents(value);
+                                mutate({ ...ref.current, budgets: b });
+                              } catch (e) {
+                                setMessage((e as Error).message);
+                              }
+                            }}
+                          >
+                            Por defecto
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </section>
+                ) : (
+                  <>
+                    <div className="settings-grid">
+                      <button onClick={logout}>
+                        <LogOut size={18} /> Cerrar sesión
+                      </button>
+                      <section className="card">
+                        <h2>Documento y copias</h2>
+                        <p>
+                          Datos en {storageMode} de este navegador/dispositivo.
+                          Borrar los datos del sitio puede eliminarlos. No hay
+                          sincronización automática; pestaña y PWA pueden tener
+                          almacenes separados.
+                        </p>
+                        <p>{capacity}</p>
+                        <p>
+                          Último guardado:{" "}
+                          {doc.savedAt
+                            ? new Date(doc.savedAt).toLocaleString("es-ES")
+                            : "Todavía no guardado"}
+                          <br />
+                          Última copia descargada: {backupDate || "Ninguna"}
+                        </p>
+                        <div className="toolbar">
+                          <label className="button">
+                            ↑ Importar JSON
+                            <input
+                              type="file"
+                              accept="application/json,.json"
+                              hidden
+                              onChange={(e) => {
+                                if (e.target.files?.[0])
+                                  void imported(e.target.files[0]);
+                                e.target.value = "";
+                              }}
+                            />
+                          </label>
+                          <button onClick={() => exportJSON()}>
+                            ↓ Descargar copia JSON
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const previous = await previousDocument();
+                              if (previous)
+                                exportJSON(
+                                  previous,
+                                  "brisa-version-anterior.json",
+                                );
+                              else
+                                setMessage("No hay copia anterior disponible.");
+                            }}
+                          >
+                            Descargar versión anterior
+                          </button>
+                          <button
+                            onClick={async () => {
+                              const ok = await navigator.storage?.persist?.();
+                              setMessage(
+                                ok
+                                  ? "Almacenamiento persistente concedido. Conserva copias igualmente."
+                                  : "No se ha concedido almacenamiento persistente; conserva copias JSON.",
+                              );
+                            }}
+                          >
+                            Solicitar almacenamiento persistente
+                          </button>
+                          <button onClick={() => setPage("budgets")}>
+                            Presupuestos →
+                          </button>
+                        </div>
+                      </section>
+                      <section className="card">
+                        <h2>Archivo externo vinculado</h2>
+                        <p>{linked}</p>
+                        <p>
+                          Además de la copia local. Vuelve a seleccionarlo
+                          después de cerrar el navegador.
+                        </p>
+                        {"showOpenFilePicker" in window ? (
+                          <div className="toolbar">
+                            <button onClick={() => void link()}>
+                              Vincular existente
+                            </button>
+                            <button onClick={() => void link(true)}>
+                              Crear archivo
+                            </button>
+                            <button
+                              onClick={() => {
+                                fileHandle.current = null;
+                                setLinked("Sin archivo vinculado");
+                              }}
+                            >
+                              Desvincular
+                            </button>
+                          </div>
+                        ) : (
+                          <p>
+                            Este navegador no ofrece File System Access. Utiliza
+                            importar y descargar copias.
+                          </p>
+                        )}
+                      </section>
+                      <section className="card">
+                        <h2>Tu recordatorio diario</h2>
+                        <div className="notification-preview">
+                          <img src="./logo.svg" alt="" />
+                          <div>
+                            <small>BRISA · AHORA</small>
+                            <b>No olvides agregar tus ingresos y gastos</b>
+                            <p>Un minuto para tu tranquilidad. ✨</p>
+                          </div>
+                        </div>
+                        <label>
+                          Hora local
+                          <input
+                            type="time"
+                            value={doc.settings.reminderTime}
+                            onChange={(e) =>
+                              mutate({
+                                ...ref.current,
+                                settings: {
+                                  ...ref.current.settings,
+                                  reminderTime: e.target.value,
+                                },
+                              })
+                            }
+                          />
+                        </label>
+                        <div className="toolbar">
+                          <button onClick={() => void enableReminder()}>
+                            Activar recordatorio
+                          </button>
+                          <button
+                            onClick={() => {
+                              setReminderCard(true);
+                              void notify();
+                            }}
+                          >
+                            Probar notificación
+                          </button>
+                          <button
+                            onClick={() =>
+                              mutate({
+                                ...ref.current,
+                                settings: {
+                                  ...ref.current.settings,
+                                  reminder: false,
+                                },
+                              })
+                            }
+                          >
+                            Desactivar
+                          </button>
+                        </div>
+                        <p>
+                          {doc.settings.reminder ? "Activado" : "Desactivado"}.
+                          Sin servidor, el recordatorio se comprueba mientras
+                          Brisa está abierta. No puede enviar push remoto con la
+                          aplicación cerrada. La apariencia de la notificación
+                          del sistema depende del dispositivo.
+                        </p>
+                      </section>
+                      <section className="card">
+                        <h2>Instalación y recibos</h2>
+                        <p>
+                          {standalone
+                            ? "Ejecutándose como aplicación instalada"
+                            : "Ejecutándose en una pestaña"}
+                        </p>
+                        {!standalone && (
+                          <button onClick={() => void installApp()}>
+                            Instalar / instrucciones
+                          </button>
+                        )}
+                        <label>
+                          Límite por archivo (MB)
+                          <input
+                            type="number"
+                            min="1"
+                            max="100"
+                            value={doc.settings.maxFileMB}
+                            onChange={(e) => {
+                              const n = Number(e.target.value);
+                              if (n >= 1 && n <= 100)
+                                mutate({
+                                  ...ref.current,
+                                  settings: {
+                                    ...ref.current.settings,
+                                    maxFileMB: n,
+                                  },
+                                });
+                            }}
+                          />
+                        </label>
+                        <p>
+                          No se comprimen recibos. localStorage permite
+                          documentos de hasta 4 MB con esta configuración,
+                          incluidos adjuntos; OPFS depende de la cuota
+                          disponible.
+                        </p>
+                        <p>
+                          Acceso frontend básico: no cifra datos. La contraseña
+                          se cambia en CONTRASENA.txt y requiere recompilar. La
+                          cookie es de sesión y depende del navegador.
+                        </p>
+                      </section>
+                    </div>
+                    <section className="card">
+                      <div className="section-title">
+                        <h2>Categorías</h2>
+                        <button
+                          onClick={() => {
+                            const name = prompt("Nombre de la categoría");
+                            if (!name) return;
+                            const type = confirm(
+                              "Aceptar: gasto. Cancelar: ingreso.",
+                            )
+                              ? "expense"
+                              : "income";
+                            mutate({
+                              ...ref.current,
+                              categories: [
+                                ...ref.current.categories,
+                                {
+                                  id: uid(),
+                                  name,
+                                  type,
+                                  icon: "✨",
+                                  color: "#ead4bc",
+                                },
+                              ],
+                            });
+                          }}
+                        >
+                          + Crear
+                        </button>
+                      </div>
+                      {doc.categories.map((c, i) => (
+                        <div className="category-row" key={c.id}>
+                          <span
+                            className="category-icon"
+                            style={{ background: c.color }}
+                          >
+                            {c.icon}
+                          </span>
+                          <b>
+                            {c.name}
+                            <small>
+                              {c.type === "expense" ? "Gasto" : "Ingreso"}
+                              {c.archived ? " · Archivada" : ""}
+                            </small>
+                          </b>
+                          <button
+                            onClick={() => {
+                              const name = prompt("Nombre", c.name);
+                              if (name)
+                                mutate({
+                                  ...ref.current,
+                                  categories: doc.categories.map((x) =>
+                                    x.id === c.id ? { ...x, name } : x,
+                                  ),
+                                });
+                            }}
+                          >
+                            Renombrar
+                          </button>
+                          <button
+                            onClick={() => {
+                              const icon = prompt("Icono (emoji)", c.icon);
+                              if (icon)
+                                mutate({
+                                  ...ref.current,
+                                  categories: doc.categories.map((x) =>
+                                    x.id === c.id ? { ...x, icon } : x,
+                                  ),
+                                });
+                            }}
+                          >
+                            Icono
+                          </button>
+                          <input
+                            aria-label={"Color " + c.name}
+                            type="color"
+                            value={c.color}
+                            onChange={(e) =>
+                              mutate({
+                                ...ref.current,
+                                categories: doc.categories.map((x) =>
+                                  x.id === c.id
+                                    ? { ...x, color: e.target.value }
+                                    : x,
+                                ),
+                              })
+                            }
+                          />
+                          <button
+                            disabled={!i}
+                            onClick={() => {
+                              const cs = [...doc.categories];
+                              [cs[i - 1], cs[i]] = [cs[i], cs[i - 1]];
+                              mutate({ ...ref.current, categories: cs });
+                            }}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            onClick={() =>
+                              mutate({
+                                ...ref.current,
+                                categories: doc.categories.map((x) =>
+                                  x.id === c.id
+                                    ? { ...x, archived: !x.archived }
+                                    : x,
+                                ),
+                              })
+                            }
+                          >
+                            {c.archived ? "Activar" : "Archivar"}
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (
+                                doc.transactions.some(
+                                  (t) => t.categoryId === c.id,
+                                )
+                              ) {
+                                setMessage(
+                                  "Esta categoría tiene movimientos. Archívala para conservar el histórico.",
+                                );
+                                return;
+                              }
+                              if (confirm("¿Eliminar " + c.name + "?"))
+                                mutate({
+                                  ...ref.current,
+                                  categories: doc.categories.filter(
+                                    (x) => x.id !== c.id,
+                                  ),
+                                });
+                            }}
+                          >
+                            Eliminar
+                          </button>
+                        </div>
+                      ))}
+                    </section>
+                  </>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </main>
+      <nav className="mobile-nav">
+        {nav.map(([id, label, Icon]) => (
+          <button
+            className={page === id ? "active" : ""}
+            key={id}
+            onClick={() => setPage(id)}
+          >
+            <Icon size={22} />
+            <small>{label}</small>
+          </button>
+        ))}
+      </nav>
+      <button
+        className="fab"
+        aria-label="Añadir movimiento"
+        onClick={() => setForm({})}
+      >
+        <Plus size={28} />
+      </button>
+      {form && (
+        <TransactionForm
+          doc={doc}
+          initial={form.initial}
+          date={form.date}
+          onSave={saveTransaction}
+          onClose={() => setForm(null)}
+          onView={(items, index) => setViewer({ items, index })}
+        />
+      )}{" "}
+      {detail && !form && (
+        <div className="overlay">
+          <section className="modal detail">
+            <header>
+              <h2>
+                {category(detail.categoryId).icon}{" "}
+                {detail.note || category(detail.categoryId).name}
+              </h2>
+              <button onClick={() => setDetail(null)}>✕</button>
+            </header>
+            <h1>
+              {detail.type === "income" ? "+" : "−"}
+              {money(detail.amountCents)}
+            </h1>
+            <p>
+              {dateLabel(detail.date)} · {category(detail.categoryId).name}
+            </p>
+            {detail.calculationExpression && (
+              <p>Cálculo: {detail.calculationExpression}</p>
+            )}
+            {detail.attachments.map((a, i) => (
+              <button
+                className="attachment"
+                key={a.id}
+                onClick={() =>
+                  setViewer({ items: detail.attachments, index: i })
+                }
+              >
+                {a.mime === "application/pdf" ? "📄" : "🖼️"} {a.name} ·{" "}
+                {(a.size / 1024).toFixed(1)} KB · Abrir →
+              </button>
+            ))}
+            <footer>
+              <button onClick={() => setForm({ initial: detail })}>
+                Editar
+              </button>
+              <button
+                onClick={() => {
+                  const include = detail.attachments.length
+                    ? confirm("¿Incluir los recibos en la copia?")
+                    : false;
+                  setForm({
+                    initial: {
+                      ...detail,
+                      id: uid(),
+                      date: today(),
+                      source: undefined,
+                      attachments: include
+                        ? detail.attachments.map((a) => ({ ...a, id: uid() }))
+                        : [],
+                    },
+                  });
+                }}
+              >
+                Duplicar
+              </button>
+              <button
+                className="danger"
+                onClick={() => {
+                  if (confirm("¿Eliminar el movimiento y sus recibos?")) {
+                    mutate({
+                      ...ref.current,
+                      transactions: doc.transactions.filter(
+                        (t) => t.id !== detail.id,
+                      ),
+                    });
+                    setDetail(null);
+                  }
+                }}
+              >
+                Eliminar
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+      {preview && (
+        <div className="overlay">
+          <section className="modal">
+            <header>
+              <h2>Revisar importación</h2>
+              <button onClick={() => setPreview(null)}>✕</button>
+            </header>
+            <p>
+              {preview.own ? "Documento Brisa" : "Money Manager"} ·{" "}
+              {preview.doc.transactions.length} válidos ·{" "}
+              {preview.invalid.length} inválidos · {preview.excluded} excluidos
+            </p>
+            <p>
+              Gastos {money(importSummary(preview).expense)} · Ingresos{" "}
+              {money(importSummary(preview).income)} · Balance{" "}
+              {money(importSummary(preview).balance)}
+            </p>
+            <p>
+              Fechas:{" "}
+              {[...preview.doc.transactions.map((t) => t.date)].sort()[0] ||
+                "—"}{" "}
+              →{" "}
+              {[...preview.doc.transactions.map((t) => t.date)].sort().at(-1) ||
+                "—"}
+            </p>
+            <p>
+              {preview.duplicates} coincidencias · {preview.conflicts}{" "}
+              conflictos. Al combinar se conservan los movimientos existentes
+              con el mismo ID.
+            </p>
+            <p>
+              Adjuntos:{" "}
+              {preview.doc.transactions.reduce(
+                (a, t) => a + t.attachments.length,
+                0,
+              )}
+            </p>
+            <details>
+              <summary>Categorías detectadas</summary>
+              {preview.doc.categories
+                .filter((c) =>
+                  preview.doc.transactions.some((t) => t.categoryId === c.id),
+                )
+                .map((c) => c.name)
+                .join(" · ")}
+            </details>
+            {[...preview.invalid, ...preview.warnings].map((s, i) => (
+              <p className="error" key={i}>
+                {s}
+              </p>
+            ))}
+            <label>
+              <input
+                type="checkbox"
+                checked={replace}
+                onChange={(e) => setReplace(e.target.checked)}
+              />{" "}
+              Reemplazar documento actual (se descarga una copia recuperable)
+            </label>
+            {!preview.own && !replace && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={keepMatches}
+                  onChange={(e) => setKeepMatches(e.target.checked)}
+                />{" "}
+                Incorporar también las coincidencias con el historial
+              </label>
+            )}
+            <footer>
+              <button
+                onClick={() => {
+                  pendingLink.current = null;
+                  setPreview(null);
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                className="primary"
+                onClick={() => {
+                  try {
+                    if (replace) {
+                      exportJSON(ref.current, "brisa-antes-de-importar.json");
+                      if (pendingLink.current) {
+                        fileHandle.current = pendingLink.current;
+                        pendingLink.current = null;
+                      }
+                      mutate(preview.doc);
+                    } else
+                      mutate(mergeImport(ref.current, preview, keepMatches));
+                    setPreview(null);
+                  } catch (e) {
+                    setMessage((e as Error).message);
+                  }
+                }}
+              >
+                Confirmar importación
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+      {viewer && <ReceiptViewer {...viewer} onClose={() => setViewer(null)} />}
+    </div>
+  );
+}
