@@ -1,0 +1,3 @@
+ESCRIBE-AQUI-TU-CONTRASENA
+
+Copia este archivo como CONTRASENA.txt y configura la primera línea antes de compilar. No publiques ese archivo.

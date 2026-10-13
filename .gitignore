@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.local
+*.log
+
+CONTRASENA.txt
+*.tsbuildinfo
+qa-artifacts/
